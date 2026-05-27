@@ -1,14 +1,32 @@
-# SuperScalar
+# SuperScalar — CTV/Covenant Fork
 
-[![CI](https://github.com/8144225309/SuperScalar/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/8144225309/SuperScalar/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/8144225309/SuperScalar)](https://github.com/8144225309/SuperScalar/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Bitcoin](https://img.shields.io/badge/Bitcoin-Lightning-orange.svg)](https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories-with-pseudo-spilman-leaves/1242)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Bitcoin](https://img.shields.io/badge/Bitcoin-Lightning-orange.svg)](https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories/1143)
 
-> v0.1.13 — post-Chart-B verification release. 30/30 signet exhibition tests passed (S1–S30), 13/13 testnet4 structures validated. Standalone watchtower penalty signing, secp256k1-zkp pin sync with CLN/wally, rotation conservation fix, CPFP child-broadcast / anchor mismatch fix (#287), PTLC turnover ceremony journaled to signing_rounds (#280), schema v36 (HTLC resolution + L-stock burn + agg hard guard). 95 test files across `tests/` (1300+ unit cases) and 42 regtest integration tests.
+---
 
-> ✅ **Production readiness — multi-process LSPs**: the wire-ceremony poison TX defense is now implemented for **all 4 ceremony paths** (PRs #136 sub-factory advance, #137 leaf advance, #138 leaf realloc, #151 + #152 Tier B root rollover).  Multi-process LSPs produce a fully-signed L-stock / sales-stock poison TX via a second MuSig2 round bundled with every state advance — the watchtower receives a real signed poison TX and can redistribute the stake to clients on cheating across all advance paths.  See [`docs/poison-tx.md`](docs/poison-tx.md) for the full security model.
+> **⚠️ EXPERIMENTAL: CTV / COVENANT-BASED UTXO SHARING**
+>
+> This is a research fork of [SuperScalar](https://github.com/8144225309/SuperScalar)
+> extending the factory protocol with covenant-enforced unilateral exits using
+> `OP_CHECKTEMPLATEVERIFY` (BIP-119), tested on [Mutinynet](https://mutinynet.com) —
+> a Bitcoin signet with CTV, OP_CAT, CSFS, and APO activated at 30-second block times.
+>
+> In the base protocol, a user exiting a factory unilaterally must broadcast a full
+> Decker-Wattenhofer transaction tree — up to 6 chained transactions, each gated by
+> a BIP-68 relative timelock. On mainnet this could take days. This fork adds a
+> CTV script-path to the factory funding output that commits to a distribution
+> transaction paying every user their current balance. Any single user can exit in
+> **one transaction with no cooperation and no timelock wait**, by spending the CTV
+> leaf. The DW tree remains as a fallback for state-update-based exits.
+>
+> This is a research prototype demonstrating covenant-enhanced UTXO sharing.
+> It is not production-ready and the on-chain scripts have not been audited.
+> **Mutinynet only.**
+
+---
+
+> **Base:** synced to SuperScalar mainline on 2026-05-22 (previously forked at v0.1.5). This fork tracks [github.com/8144225309/SuperScalar](https://github.com/8144225309/SuperScalar) as its `upstream` remote. To re-sync with mainline: `git fetch upstream && git reset --hard upstream/main` then re-apply the CTV commits on top. All CTV/covenant work is layered on the latest mainline protocol.
 
 Implementation of [ZmnSCPxj's SuperScalar design](https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories-with-pseudo-spilman-leaves/1242) — laddered timeout-tree-structured Decker-Wattenhofer channel factories for Bitcoin.
 
