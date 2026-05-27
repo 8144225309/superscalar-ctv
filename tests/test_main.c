@@ -1278,6 +1278,18 @@ extern int test_prometheus_handle_connection_404(void);
 extern int test_prometheus_handle_connection_405(void);
 extern int test_prometheus_client_counter(void);
 
+/* superscalar-ctv: CTV (BIP-119) node-capability detection */
+extern int test_ctv_parse_active_boolean(void);
+extern int test_ctv_parse_signaling(void);
+extern int test_ctv_parse_defined(void);
+extern int test_ctv_parse_failed_is_absent(void);
+extern int test_ctv_parse_alt_name(void);
+extern int test_ctv_parse_bit5_fallback(void);
+extern int test_ctv_parse_absent(void);
+extern int test_ctv_parse_no_deployments_is_unknown(void);
+extern int test_ctv_parse_null_and_garbage(void);
+extern int test_ctv_status_str(void);
+
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
 extern int test_reconnect_pubkey_match(void);
@@ -3128,6 +3140,18 @@ static void run_unit_tests(void) {
     RUN_TEST(test_prometheus_handle_connection_404);
     RUN_TEST(test_prometheus_handle_connection_405);
     RUN_TEST(test_prometheus_client_counter);
+
+    printf("\n=== CTV (BIP-119) node-capability detection ===\n");
+    RUN_TEST(test_ctv_parse_active_boolean);
+    RUN_TEST(test_ctv_parse_signaling);
+    RUN_TEST(test_ctv_parse_defined);
+    RUN_TEST(test_ctv_parse_failed_is_absent);
+    RUN_TEST(test_ctv_parse_alt_name);
+    RUN_TEST(test_ctv_parse_bit5_fallback);
+    RUN_TEST(test_ctv_parse_absent);
+    RUN_TEST(test_ctv_parse_no_deployments_is_unknown);
+    RUN_TEST(test_ctv_parse_null_and_garbage);
+    RUN_TEST(test_ctv_status_str);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);

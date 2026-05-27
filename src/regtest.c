@@ -691,6 +691,83 @@ char *regtest_exec(const regtest_t *rt, const char *method, const char *params) 
 #endif
 }
 
+/* --- CTV (BIP-119) node-capability detection (superscalar-ctv fork) --- */
+
+const char *regtest_ctv_status_str(regtest_ctv_status_t s) {
+    switch (s) {
+        case REGTEST_CTV_ACTIVE:    return "active";
+        case REGTEST_CTV_SIGNALING: return "signaling";
+        case REGTEST_CTV_DEFINED:   return "defined";
+        case REGTEST_CTV_ABSENT:    return "absent";
+        case REGTEST_CTV_UNKNOWN:   return "unknown";
+        default:                    return "unknown";
+    }
+}
+
+/* Map a single deployment object's bip9.status / .active to our enum. */
+static regtest_ctv_status_t ctv_status_from_deployment(const cJSON *dep) {
+    if (!dep) return REGTEST_CTV_ABSENT;
+    /* getdeploymentinfo exposes a top-level "active" boolean per deployment. */
+    const cJSON *active = cJSON_GetObjectItem((cJSON *)dep, "active");
+    if (cJSON_IsBool(active) && cJSON_IsTrue(active))
+        return REGTEST_CTV_ACTIVE;
+    /* Otherwise consult bip9.status. */
+    const cJSON *bip9 = cJSON_GetObjectItem((cJSON *)dep, "bip9");
+    const cJSON *status = bip9 ? cJSON_GetObjectItem((cJSON *)bip9, "status") : NULL;
+    if (cJSON_IsString(status) && status->valuestring) {
+        const char *s = status->valuestring;
+        if (strcmp(s, "active") == 0)                              return REGTEST_CTV_ACTIVE;
+        if (strcmp(s, "started") == 0 || strcmp(s, "locked_in") == 0) return REGTEST_CTV_SIGNALING;
+        if (strcmp(s, "defined") == 0)                             return REGTEST_CTV_DEFINED;
+        if (strcmp(s, "failed") == 0)                              return REGTEST_CTV_ABSENT;
+        return REGTEST_CTV_DEFINED;  /* unknown status string — known but not enforced */
+    }
+    /* Deployment object present but no parseable status: treat as defined. */
+    return REGTEST_CTV_DEFINED;
+}
+
+regtest_ctv_status_t regtest_parse_ctv_status(const char *json) {
+    if (!json) return REGTEST_CTV_UNKNOWN;
+    cJSON *root = cJSON_Parse(json);
+    if (!root) return REGTEST_CTV_UNKNOWN;
+
+    cJSON *deployments = cJSON_GetObjectItem(root, "deployments");
+    if (!deployments || !cJSON_IsObject(deployments)) {
+        /* No deployments object — node too old (no getdeploymentinfo) or
+           the call errored.  Caller treats UNKNOWN as refuse-worthy. */
+        cJSON_Delete(root);
+        return REGTEST_CTV_UNKNOWN;
+    }
+
+    /* Preferred: a deployment named "checktemplateverify" or "ctv". */
+    cJSON *ctv = cJSON_GetObjectItem(deployments, "checktemplateverify");
+    if (!ctv) ctv = cJSON_GetObjectItem(deployments, "ctv");
+
+    /* Fallback: scan for any bip9 deployment signaling on bit 5 (CTV's
+       conventional deployment bit per the activation client). */
+    if (!ctv) {
+        cJSON *dep = NULL;
+        cJSON_ArrayForEach(dep, deployments) {
+            cJSON *bip9 = cJSON_GetObjectItem(dep, "bip9");
+            cJSON *bit = bip9 ? cJSON_GetObjectItem(bip9, "bit") : NULL;
+            if (cJSON_IsNumber(bit) && bit->valueint == 5) { ctv = dep; break; }
+        }
+    }
+
+    regtest_ctv_status_t out = ctv ? ctv_status_from_deployment(ctv)
+                                   : REGTEST_CTV_ABSENT;
+    cJSON_Delete(root);
+    return out;
+}
+
+regtest_ctv_status_t regtest_node_ctv_status(const regtest_t *rt) {
+    char *result = regtest_exec(rt, "getdeploymentinfo", "");
+    if (!result) return REGTEST_CTV_UNKNOWN;
+    regtest_ctv_status_t s = regtest_parse_ctv_status(result);
+    free(result);
+    return s;
+}
+
 int regtest_create_wallet(regtest_t *rt, const char *name) {
     char params[256];
     snprintf(params, sizeof(params), "\"%s\"", name);

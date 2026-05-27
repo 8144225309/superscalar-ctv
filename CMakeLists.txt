@@ -339,6 +339,7 @@ add_executable(test_superscalar
     tests/test_reorg.c
     tests/test_cli_arity.c
     tests/test_prometheus.c
+    tests/test_ctv_detect.c
 )
 target_include_directories(test_superscalar PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
 target_include_directories(test_superscalar PRIVATE ${cjson_SOURCE_DIR})
