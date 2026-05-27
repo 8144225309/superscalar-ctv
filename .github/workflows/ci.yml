@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, ctv-covenant-utxo-sharing]
   pull_request:
-    branches: [main]
+    branches: [main, ctv-covenant-utxo-sharing]
 
 concurrency:
   group: ci-${{ github.ref }}
