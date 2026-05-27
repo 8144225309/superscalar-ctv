@@ -169,6 +169,74 @@ jobs:
         if: always()
         run: bitcoin-cli -regtest stop 2>/dev/null || true
 
+  ctv-node-detection:
+    # superscalar-ctv only: prove the --ctv-mode startup check against REAL
+    # nodes, not just the mock-JSON unit tests.  Two regtest nodes, same base
+    # version (28.1) so CTV enforcement is the only variable: vanilla Bitcoin
+    # Core (no CTV -> must REFUSE, anyone-can-spend guard) and Bitcoin
+    # Inquisition 28.1-inq (CTV enforced -> must PROCEED).  Both binaries are
+    # downloaded + checksum-verified; no fork compile needed.
+    runs-on: ubuntu-latest
+    name: CTV Node Detection (vanilla refuse / Inquisition proceed)
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libssl-dev
+      - name: Cache Bitcoin Core 28.1 (vanilla)
+        id: btc-cache
+        uses: actions/cache@v4
+        with:
+          path: bitcoin-28.1
+          key: bitcoin-core-28.1-x86_64
+      - name: Download Bitcoin Core 28.1 (vanilla, no CTV)
+        if: steps.btc-cache.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://bitcoincore.org/bin/bitcoin-core-28.1/bitcoin-28.1-x86_64-linux-gnu.tar.gz
+          wget -q https://bitcoincore.org/bin/bitcoin-core-28.1/SHA256SUMS
+          grep "bitcoin-28.1-x86_64-linux-gnu.tar.gz" SHA256SUMS | sha256sum -c -
+          tar xzf bitcoin-28.1-x86_64-linux-gnu.tar.gz
+      - name: Install Bitcoin Core (vanilla) to PATH
+        run: sudo install -m 0755 bitcoin-28.1/bin/bitcoind bitcoin-28.1/bin/bitcoin-cli /usr/local/bin/
+      - name: Cache Bitcoin Inquisition 28.1-inq (CTV)
+        id: inq-cache
+        uses: actions/cache@v4
+        with:
+          path: inq
+          key: bitcoin-inquisition-28.1-inq-x86_64
+      - name: Download Bitcoin Inquisition 28.1-inq (CTV enforced)
+        if: steps.inq-cache.outputs.cache-hit != 'true'
+        run: |
+          base=https://github.com/bitcoin-inquisition/bitcoin/releases/download/v28.1-inq
+          wget -q "$base/bitcoin-28.1-inq-x86_64-linux-gnu.tar.gz"
+          wget -q "$base/SHA256SUMS"
+          grep "bitcoin-28.1-inq-x86_64-linux-gnu.tar.gz" SHA256SUMS | sha256sum -c -
+          mkdir -p inq
+          tar xzf bitcoin-28.1-inq-x86_64-linux-gnu.tar.gz -C inq --strip-components=1
+      - name: Configure regtest
+        run: |
+          mkdir -p ~/.bitcoin
+          cat > ~/.bitcoin/bitcoin.conf <<CONF
+          regtest=1
+          server=1
+          rpcuser=rpcuser
+          rpcpassword=rpcpass
+          fallbackfee=0.00001
+          [regtest]
+          rpcport=18443
+          CONF
+      - name: Build superscalar_lsp
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build --parallel --target superscalar_lsp
+      - name: Live two-node CTV detection test
+        run: |
+          ulimit -s unlimited 2>/dev/null || true
+          bash tools/test_ctv_node_detection.sh build "$PWD/inq/bin"
+      - name: Stop bitcoind
+        if: always()
+        run: bitcoin-cli -regtest stop 2>/dev/null || true
+
   regtest-multiprocess-sanitizers:
     runs-on: ubuntu-latest
     name: Regtest Multi-Process (sanitizers)

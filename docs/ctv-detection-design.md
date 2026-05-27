@@ -120,8 +120,13 @@ string**, so the mapping logic is unit-tested without a live node
 
 ## Testing
 
-- **Unit:** `tests/test_ctv_detect.c` feeds mock getdeploymentinfo payloads (active / started / locked_in / defined / failed / alt-name / bit-5 fallback / absent / no-deployments / NULL / garbage) and asserts the enum mapping. Runs with `./test_superscalar --unit` — no node required.
-- **Manual (Mutinynet):** `superscalar_lsp --ctv-mode --network signet --rpc... ` against a Mutinynet node should print `node CTV (BIP-119) deployment status = active` and proceed. Against a vanilla signet node it should refuse with the anyone-can-spend warning.
+- **Unit:** `tests/test_ctv_detect.c` feeds mock getdeploymentinfo payloads (active / started / locked_in / defined / failed / alt-name / bit-5 fallback / absent / no-deployments / NULL / garbage) and asserts the enum mapping. Runs with `./test_superscalar --unit` — no node required. Verifies the parser *given* a payload; it cannot verify the payload shape a real node actually returns.
+- **Live two-node (CI):** `tools/test_ctv_node_detection.sh`, driven by the `ctv-node-detection` CI job, stands up two real regtest nodes of the same base version (28.1) so CTV enforcement is the only variable:
+  - **vanilla Bitcoin Core 28.1** (no CTV) — `--ctv-mode` must **refuse** (exit non-zero, anyone-can-spend message);
+  - **Bitcoin Inquisition 28.1-inq** (CTV enforced) — `--ctv-mode` must **proceed**.
+
+  Both binaries are downloaded and checksum-verified (no fork compile). This is the test that exercises the **real `getdeploymentinfo` shape end-to-end** — it would catch a detector that, e.g., expects a deployment entry the real node reports differently. It dumps the live `getdeploymentinfo` CTV deployment for both nodes so the actual shape is on the record.
+- **Manual (signet/Mutinynet, optional):** `superscalar_lsp --ctv-mode --network signet ...` against a Mutinynet node for a non-regtest CTV confirmation.
 
 ## References
 
