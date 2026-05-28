@@ -35,6 +35,23 @@ int test_ctv_parse_active_boolean(void) {
     return 1;
 }
 
+/* Real Bitcoin Inquisition payload: type "heretical" (NOT bip9), with a
+   top-level active:true and a "heretical" sub-object instead of "bip9".
+   Captured live from a bitcoin-28.1-inq regtest node's getdeploymentinfo
+   (see tools/test_ctv_node_detection.sh).  The top-level "active" boolean
+   must drive the verdict regardless of the absent bip9 object — this is the
+   shape --ctv-mode actually meets against a real CTV node. */
+int test_ctv_parse_inquisition_heretical_active(void) {
+    const char *j =
+        "{\"deployments\":{\"checktemplateverify\":{"
+        "\"type\":\"heretical\",\"height\":0,\"active\":true,"
+        "\"heretical\":{\"binana-id\":\"BIN-2016-0119-000\","
+        "\"start_time\":-1,\"timeout\":9223372036854775807,\"period\":144}}}}";
+    ASSERT(regtest_parse_ctv_status(j) == REGTEST_CTV_ACTIVE,
+           "Inquisition heretical active:true must map to REGTEST_CTV_ACTIVE");
+    return 1;
+}
+
 /* signaling states: started + locked_in. */
 int test_ctv_parse_signaling(void) {
     const char *started =

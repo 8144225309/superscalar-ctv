@@ -43,15 +43,29 @@ wait_rpc() {
   echo "ERROR: bitcoind RPC did not come up"; return 1
 }
 
+LSP_OUT="${TMPDIR:-/tmp}/ctv_lsp_out.txt"
+
 # Run `superscalar_lsp --ctv-mode` against the live regtest node.
-# Sets globals OUT (combined stdout+stderr) and RC (exit code). stdbuf forces
-# line-buffering so the early CTV-decision prints are flushed before `timeout`
-# kills the daemon on the PROCEED path (where the binary would run forever).
+# Sets globals OUT (combined stdout+stderr) and RC (exit code).
+#
+# Output goes to a FILE, not a command-substitution pipe. On the PROCEED path
+# the LSP runs past the CTV check (daemon/worker); a child inherits the stdout
+# fd, so a $(...) pipe would never reach EOF and the read would block until the
+# job timeout. A regular file has no such dependency. stdbuf forces line
+# buffering so the early CTV-decision lines are flushed before `timeout` stops
+# the process; --kill-after SIGKILLs anything ignoring SIGTERM; pkill reaps a
+# daemonized survivor so it can't hold the RPC/port into the next phase.
 run_ctv_mode() {
   set +e
-  OUT="$(timeout 30 stdbuf -oL -eL "$LSP" --ctv-mode --network regtest --port 19099 2>&1)"
+  : > "$LSP_OUT"
+  timeout --kill-after=5 --signal=TERM 30 \
+    stdbuf -oL -eL "$LSP" --ctv-mode --network regtest --port 19099 \
+    > "$LSP_OUT" 2>&1
   RC=$?
+  pkill -f "superscalar_lsp .*--ctv-mode" >/dev/null 2>&1 || true
   set -e
+  OUT="$(cat "$LSP_OUT")"
+  sleep 1
 }
 
 show_ctv_deployment() {
@@ -94,10 +108,9 @@ echo "######################################################################"
 "$INQ_BIN/bitcoind" -regtest -daemon -fallbackfee=0.00001 >/dev/null
 wait_rpc
 bitcoin-cli -regtest createwallet ctvtest >/dev/null 2>&1 || true
-# Drive BIP9 past the regtest activation window so checktemplateverify reaches
-# 'active'. (defined/started/locked_in would also PROCEED on regtest — only
-# absent/unknown refuse — but 'active' is the cleanest positive signal.)
-bitcoin-cli -regtest -generate 432 >/dev/null
+# Inquisition activates CTV "heretically" from genesis (height 0, active:true),
+# so no BIP9 ramp is needed; these blocks just fund the wallet.
+bitcoin-cli -regtest -generate 101 >/dev/null
 echo "--- inquisition getdeploymentinfo (CTV expected PRESENT) ---"
 show_ctv_deployment
 run_ctv_mode

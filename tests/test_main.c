@@ -1280,6 +1280,7 @@ extern int test_prometheus_client_counter(void);
 
 /* superscalar-ctv: CTV (BIP-119) node-capability detection */
 extern int test_ctv_parse_active_boolean(void);
+extern int test_ctv_parse_inquisition_heretical_active(void);
 extern int test_ctv_parse_signaling(void);
 extern int test_ctv_parse_defined(void);
 extern int test_ctv_parse_failed_is_absent(void);
@@ -3143,6 +3144,7 @@ static void run_unit_tests(void) {
 
     printf("\n=== CTV (BIP-119) node-capability detection ===\n");
     RUN_TEST(test_ctv_parse_active_boolean);
+    RUN_TEST(test_ctv_parse_inquisition_heretical_active);
     RUN_TEST(test_ctv_parse_signaling);
     RUN_TEST(test_ctv_parse_defined);
     RUN_TEST(test_ctv_parse_failed_is_absent);
