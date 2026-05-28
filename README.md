@@ -36,6 +36,7 @@ A Bitcoin channel factory protocol combining:
 - **Timeout-sig-trees** — N-of-N MuSig2 key-path with CLTV timeout script-path fallback
 - **Poon-Dryja channels** — standard Lightning channels at leaf outputs with HTLCs
 - **LSP + N clients** — the LSP participates in every branch; no consensus changes required
+- **LSP-funded** — the LSP provides 100% of factory capital; clients receive inbound liquidity at no upfront cost. The MuSig2 N-of-N at the funding output is consent to spend (every party signs to cooperatively close), not capital contribution. Economic mode: `lsp-takes-all` — the LSP earns routing fees, clients get routing access. User-brings-sats / profit-shared / cooperative-pool models are out of scope for this protocol
 
 ## Features
 
@@ -563,8 +564,6 @@ superscalar_lsp [OPTIONS]
 | `--routing-fee-ppm` | N | 0 | Routing fee in parts-per-million (0 = free) |
 | `--lsp-balance-pct` | N | 100 | LSP's share of channel capacity, 0-100 (--demo overrides to 50) |
 | `--placement-mode` | MODE | sequential | Client placement: sequential / inward / outward |
-| `--economic-mode` | MODE | lsp-takes-all | Fee model: lsp-takes-all / profit-shared |
-| `--default-profit-bps` | N | 0 | Default profit share per client (basis points) |
 | `--no-jit` | — | off | Disable JIT channel fallback |
 | `--jit-amount` | SATS | auto | Per-client JIT channel funding amount |
 | `--max-connections` | N | clients | Max inbound connections to accept (1..LSP_MAX_CLIENTS) |
@@ -574,7 +573,6 @@ superscalar_lsp [OPTIONS]
 | `--cli` | — | off | Interactive CLI in daemon mode (pay/status/rotate/close) |
 | `--step-blocks` | N | 10 | DW step blocks (nSequence decrement per state) |
 | `--states-per-layer` | N | 4 | DW states per layer (2-256) |
-| `--settlement-interval` | N | 144 | Blocks between profit settlements |
 | `--payments` | N | 0 | Number of HTLC payments to process |
 | `--cltv-timeout` | N | auto | Factory CLTV timeout (absolute block height) |
 | `--tor-proxy` | HOST:PORT | — | SOCKS5 proxy for Tor |

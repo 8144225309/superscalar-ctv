@@ -165,8 +165,6 @@ Press **Ctrl+C**. The LSP will:
 | `--routing-fee-ppm` | 0 | Routing fee in parts-per-million (0 = free forwarding) |
 | `--lsp-balance-pct` | 50 | LSP's share of each channel capacity (0-100) |
 | `--placement-mode` | sequential | Client tree placement: `sequential` / `inward` / `outward` |
-| `--economic-mode` | lsp-takes-all | Fee model: `lsp-takes-all` / `profit-shared` |
-| `--default-profit-bps` | 0 | Default profit share per client (basis points, 0-10000) |
 
 ### Timing
 
@@ -208,10 +206,9 @@ Press **Ctrl+C**. The LSP will:
 - **inward**: High-balance clients near root. Reduces exit costs for clients with the most at stake.
 - **outward**: Low-uptime clients at leaves. Reduces operator exposure at the edges of the tree.
 
-### Economic Modes Explained
+### Economics
 
-- **lsp-takes-all**: The LSP keeps 100% of routing fees. Simple, no settlement overhead — a good starting point.
-- **profit-shared**: Routing fees are redistributed to clients based on their `profit_share_bps`. Settlement happens periodically via Decker-Wattenhofer state advances. Incentivizes client participation.
+The LSP is the sole funder of every factory and keeps 100% of routing fees (`lsp-takes-all`). Clients receive inbound liquidity from the LSP at no upfront cost. There is no profit-sharing or user-brings-sats model in the current protocol.
 
 ### Advanced Flags
 
