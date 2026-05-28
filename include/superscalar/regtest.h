@@ -26,6 +26,34 @@ int   regtest_init_full(regtest_t *rt, const char *network,
                         const char *rpcpassword, const char *datadir,
                         int rpcport);
 char *regtest_exec(const regtest_t *rt, const char *method, const char *params);
+
+/* --- CTV (BIP-119) node-capability detection (superscalar-ctv fork) ---
+   OP_CHECKTEMPLATEVERIFY is OP_NOP4 on non-upgraded nodes — a CTV output
+   on such a node is anyone-can-spend.  Before this fork creates any CTV
+   covenant output it MUST confirm the connected node enforces CTV, or
+   the funds walk.  These helpers report the node's CTV deployment status
+   from `getdeploymentinfo`. */
+typedef enum {
+    REGTEST_CTV_ACTIVE,     /* deployment active — CTV enforced; safe to use */
+    REGTEST_CTV_SIGNALING,  /* started / locked_in — known but NOT yet enforced */
+    REGTEST_CTV_DEFINED,    /* deployment defined but not started */
+    REGTEST_CTV_ABSENT,     /* no CTV deployment — vanilla node, OP_NOP4 semantics */
+    REGTEST_CTV_UNKNOWN     /* getdeploymentinfo missing / RPC failed / unparseable */
+} regtest_ctv_status_t;
+
+/* Pure parser over a getdeploymentinfo JSON-result string.  Exposed so
+   it can be unit-tested without a live node.  Looks for a deployment
+   named "checktemplateverify" or "ctv", else any bip9 deployment on
+   bit 5.  Returns REGTEST_CTV_UNKNOWN on NULL / unparseable input. */
+regtest_ctv_status_t regtest_parse_ctv_status(const char *getdeploymentinfo_json);
+
+/* Live query: calls getdeploymentinfo on the connected node and maps the
+   result via regtest_parse_ctv_status().  REGTEST_CTV_UNKNOWN if the RPC
+   call returns nothing (e.g. node too old to have getdeploymentinfo). */
+regtest_ctv_status_t regtest_node_ctv_status(const regtest_t *rt);
+
+/* Human-readable status string for logs ("active"/"signaling"/...). */
+const char *regtest_ctv_status_str(regtest_ctv_status_t s);
 int   regtest_get_block_height(regtest_t *rt);
 /* Reorg-resilience helper (Issue #2): fill hash_out_buf (>= 65 bytes)
    with the current best-block hash hex. Returns 1 on success, 0 on error. */

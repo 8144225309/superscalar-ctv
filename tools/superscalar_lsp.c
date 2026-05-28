@@ -410,6 +410,11 @@ static void usage(const char *prog) {
         "                      (the breach), watchtower detects + broadcasts PTLC\n"
         "                      penalty sweep. Proves trustless model on chain. (regtest)\n"
         "  --i-accept-the-risk Allow mainnet operation (PROTOTYPE — funds at risk!)\n"
+        "  --ctv-mode          [superscalar-ctv] Enable the CTV covenant path. At startup,\n"
+        "                      verifies the connected node enforces CTV (BIP-119) via\n"
+        "                      getdeploymentinfo; refuses to run against a non-CTV node\n"
+        "                      (where CTV outputs would be anyone-can-spend). Warns but\n"
+        "                      proceeds on test networks when CTV is signaling-not-active.\n"
         "  --version           Show version and exit\n"
         "  --help              Show this help\n",
         prog, LSP_MAX_CLIENTS,
@@ -1376,6 +1381,11 @@ int main(int argc, char *argv[]) {
     uint64_t create_offer_amount = 0;      /* optional amount_msat (0 = any) */
     uint16_t well_known_port = 0;          /* 0 = disabled; set with --well-known-port */
     uint16_t prometheus_port = 0;         /* 0 = disabled; set with --prometheus-port */
+    int ctv_mode = 0;                      /* superscalar-ctv: --ctv-mode enables the CTV
+                                              covenant path.  Step 1 (this build) is a node
+                                              capability check at startup — refuses to run
+                                              against a node that doesn't enforce CTV, since
+                                              CTV outputs there would be anyone-can-spend. */
     int use_clnbridge = 0;                 /* --clnbridge: use CLN bridge for inbound payments */
     char gossip_peers[1024] = "";          /* --gossip-peers HOST:PORT[,HOST:PORT,...] */
     uint16_t bolt8_listen_port = 0;        /* --bolt8-port N: BOLT #8 TCP accept port */
@@ -1933,6 +1943,8 @@ int main(int argc, char *argv[]) {
             well_known_port = (uint16_t)atoi(argv[++i]);
         else if (strcmp(argv[i], "--prometheus-port") == 0 && i + 1 < argc)
             prometheus_port = (uint16_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--ctv-mode") == 0)
+            ctv_mode = 1;
         else if (strcmp(argv[i], "--clnbridge") == 0)
             use_clnbridge = 1;
         else if (strcmp(argv[i], "--gossip-peers") == 0 && i + 1 < argc) {
@@ -2464,6 +2476,54 @@ int main(int argc, char *argv[]) {
         secp256k1_context_destroy(ctx);
         return 1;
     }
+
+    /* superscalar-ctv: CTV node-capability check.  Before this fork creates
+       any CTV covenant output we must confirm the connected node ENFORCES
+       CTV — on a non-upgraded node OP_CHECKTEMPLATEVERIFY is OP_NOP4, i.e.
+       a CTV output is anyone-can-spend and the funds walk.  Detection only;
+       no covenant construction happens in this build. */
+    if (ctv_mode) {
+        if (!rt_ok) {
+            fprintf(stderr,
+                "Error: --ctv-mode cannot detect CTV support without a bitcoind RPC "
+                "connection (light-client mode can't call getdeploymentinfo).\n"
+                "       Run against a CTV-enabled node (Mutinynet / CTV activation client).\n");
+            secp256k1_context_destroy(ctx);
+            return 1;
+        }
+        regtest_ctv_status_t ctv = regtest_node_ctv_status(&rt);
+        int is_mainnet = (strcmp(network, "mainnet") == 0);
+        printf("--ctv-mode: node CTV (BIP-119) deployment status = %s\n",
+               regtest_ctv_status_str(ctv));
+        if (ctv == REGTEST_CTV_ACTIVE) {
+            printf("--ctv-mode: CTV is active and enforced on this node — proceeding.\n");
+        } else if (ctv == REGTEST_CTV_SIGNALING || ctv == REGTEST_CTV_DEFINED) {
+            if (is_mainnet) {
+                fprintf(stderr,
+                    "Error: --ctv-mode: CTV is known but NOT YET ENFORCED on mainnet "
+                    "(status=%s).\n       Creating CTV outputs now would be "
+                    "anyone-can-spend. Refusing to start.\n",
+                    regtest_ctv_status_str(ctv));
+                secp256k1_context_destroy(ctx);
+                return 1;
+            }
+            fprintf(stderr,
+                "WARNING: --ctv-mode: CTV is %s (not yet enforced) on this %s node.\n"
+                "         CTV outputs are NOT covenant-protected here. Proceeding for\n"
+                "         ceremony/wire testing ONLY — do not commit real funds.\n",
+                regtest_ctv_status_str(ctv), network);
+        } else {
+            /* ABSENT or UNKNOWN */
+            fprintf(stderr,
+                "Error: --ctv-mode: connected node does not enforce CTV (status=%s).\n"
+                "       OP_CHECKTEMPLATEVERIFY is a no-op there (anyone-can-spend).\n"
+                "       Use a CTV-enabled node (Mutinynet / CTV activation client). Refusing.\n",
+                regtest_ctv_status_str(ctv));
+            secp256k1_context_destroy(ctx);
+            return 1;
+        }
+    }
+
     /* Auto-create/load wallet (handles "already exists" gracefully) */
     if (rt_ok)
         regtest_create_wallet(&rt, wallet_name ? wallet_name : "superscalar_lsp");
