@@ -24,6 +24,7 @@
  */
 
 #include "superscalar/ctv_factory.h"
+#include "superscalar/sha256.h"
 #include <secp256k1.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -123,11 +124,22 @@ int main(int argc, char **argv) {
         fprintf(stderr, "LSP seed → pubkey failed\n");
         return 1;
     }
+    /* sha256(seed_base || LE32(i)) so every i yields a valid private key.
+     * The byte-repeated approach hit 0x00 and 0xFF (both invalid as 256-bit
+     * scalars: 0x00...0 is the zero key, 0xFF...F exceeds the curve order),
+     * so user counts that walked past those values would crash mid-build
+     * (e.g. N=200 with default seed_base=0xB1 hits 0xFF at i=78). */
     for (uint32_t i = 0; i < n_users; i++) {
+        unsigned char seed_input[5];
+        seed_input[0] = user_seed_base;
+        seed_input[1] = (unsigned char)(i & 0xFFu);
+        seed_input[2] = (unsigned char)((i >> 8) & 0xFFu);
+        seed_input[3] = (unsigned char)((i >> 16) & 0xFFu);
+        seed_input[4] = (unsigned char)((i >> 24) & 0xFFu);
         unsigned char sk[32];
-        memset(sk, (int)(unsigned int)((user_seed_base + i) & 0xFFu), 32);
+        sha256(seed_input, sizeof(seed_input), sk);
         if (!secp256k1_ec_pubkey_create(ctx, &f.user_pubkeys[i], sk)) {
-            fprintf(stderr, "user[%u] seed → pubkey failed\n", i);
+            fprintf(stderr, "user[%u] sha256 seed -> pubkey failed\n", i);
             return 1;
         }
     }
