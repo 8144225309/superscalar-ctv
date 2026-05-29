@@ -59,6 +59,19 @@ typedef struct {
      * See CTV_FACTORY_DESIGN.md Item #4. */
     uint32_t recovery_offset_blocks;
 
+    /* Operator-configured per-LEAF activation timeout offset (anti-griefing).
+     *   0  → no leaf-level timeout (leaf is key-path-only, PR #6 behavior)
+     *   >0 → activation_cltv_absolute = funding_block_height + this value
+     *        and each user leaf gets an LSP-only timeout tap leaf:
+     *        <activation_cltv> OP_CLTV OP_DROP <LSP_xonly> OP_CHECKSIG
+     *
+     * Inactive users (didn't sign their Phase C.2 channel commit by the
+     * deadline) have their slot reclaimable by the LSP via the leaf-level
+     * tap leaf, bounding the LSP's capital risk under enrollment Sybil
+     * griefing.  Legitimate users defeat the timeout by broadcasting
+     * their pre-signed channel commit. */
+    uint32_t activation_offset_blocks;
+
     /* LSP's pubkey.  At index 0 in the N-of-N keyagg. */
     secp256k1_pubkey lsp_pubkey;
 
@@ -75,6 +88,10 @@ typedef struct {
 
     /* Recovery sweep absolute block height (0 if recovery_offset_blocks==0). */
     uint32_t recovery_cltv_absolute;
+
+    /* Leaf-level activation timeout absolute block height
+     * (0 if activation_offset_blocks==0). */
+    uint32_t activation_cltv_absolute;
 
     /* MuSig2 keyagg over {LSP, user_0, ..., user_{n-1}}.
      * Used as the internal key of the funding output's P2TR (key path =
@@ -260,6 +277,8 @@ typedef struct {
     uint32_t n_users;                /* MUST equal fanout^depth             */
     uint64_t slot_deposit_sats;      /* per-leaf user                       */
     uint32_t recovery_offset_blocks; /* 0 = no LSP-sweep leaf on funding TX */
+    uint32_t activation_offset_blocks; /* 0 = no leaf-level timeout
+                                        * (see ctv_factory_t for semantics) */
 
     secp256k1_pubkey lsp_pubkey;
     /* Pointer to caller-owned array of n_users user pubkeys.  Indexing
@@ -279,6 +298,10 @@ typedef struct {
 
     /* Absolute LSP-recovery-sweep block height (0 if no sweep). */
     uint32_t recovery_cltv_absolute;
+
+    /* Leaf-level activation timeout absolute block height
+     * (0 if activation_offset_blocks==0). */
+    uint32_t activation_cltv_absolute;
 
     /* Root TH and root keyagg (the funding output's CTV leaf commits to
      * this TH, and the funding output's internal key is this keyagg). */

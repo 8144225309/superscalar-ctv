@@ -59,6 +59,8 @@ static void usage(const char *prog) {
         "  --slot-deposit S         per-user deposit in sats\n"
         "  --funding-height H       block height funding TX confirms at (default 0)\n"
         "  --recovery-blocks R      LSP-sweep offset; 0 = no sweep leaf (default 0)\n"
+        "  --activation-blocks A    leaf-level activation timeout offset (anti-griefing);\n"
+        "                           0 = no leaf timeout, key-path-only leaves (default 0)\n"
         "  --lsp-seed-hex H         32-byte LSP secret-key seed (default: all 0xA1)\n"
         "  --user-seed-base B       single byte; user_i seed = sha256(B||LE32(i)) (default: 0xB1)\n"
         "  --funding-txid T         32-byte funding outpoint (hex, LE wire order)\n"
@@ -97,7 +99,7 @@ static int run_hierarchical(
     secp256k1_context *ctx,
     uint8_t depth, uint8_t fanout, uint32_t n_users,
     uint64_t slot_deposit, uint32_t funding_height,
-    uint32_t recovery_blocks,
+    uint32_t recovery_blocks, uint32_t activation_blocks,
     const unsigned char lsp_seed[32], unsigned char user_seed_base)
 {
     /* Validate K^d == n_users. */
@@ -121,6 +123,7 @@ static int run_hierarchical(
     f.n_users = n_users;
     f.slot_deposit_sats = slot_deposit;
     f.recovery_offset_blocks = recovery_blocks;
+    f.activation_offset_blocks = activation_blocks;
     f.user_pubkeys = user_pks;
 
     if (!secp256k1_ec_pubkey_create(ctx, &f.lsp_pubkey, lsp_seed)) {
@@ -152,6 +155,7 @@ static int run_hierarchical(
     printf("slot_deposit_sats=%llu\n", (unsigned long long)f.slot_deposit_sats);
     printf("total_funding_sats=%llu\n", (unsigned long long)f.total_funding_sats);
     printf("recovery_cltv_absolute=%u\n", f.recovery_cltv_absolute);
+    printf("activation_cltv_absolute=%u\n", f.activation_cltv_absolute);
     printf("anchor_sats=%u\n", (unsigned int)CTV_FACTORY_ANCHOR_SATS);
 
     printf("funding_spk_hex=");
@@ -172,6 +176,7 @@ int main(int argc, char **argv) {
     uint64_t slot_deposit = 0;
     uint32_t funding_height = 0;
     uint32_t recovery_blocks = 0;
+    uint32_t activation_blocks = 0;  /* 0 = no leaf-level timeout (default) */
     unsigned char lsp_seed[32]; memset(lsp_seed, 0xA1, 32);
     unsigned char user_seed_base = 0xB1;
     int have_funding_outpoint = 0;
@@ -190,6 +195,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(k, "--slot-deposit") && v) { slot_deposit = (uint64_t)strtoull(v, NULL, 10); i++; }
         else if (!strcmp(k, "--funding-height") && v) { funding_height = (uint32_t)strtoul(v, NULL, 10); i++; }
         else if (!strcmp(k, "--recovery-blocks") && v) { recovery_blocks = (uint32_t)strtoul(v, NULL, 10); i++; }
+        else if (!strcmp(k, "--activation-blocks") && v) { activation_blocks = (uint32_t)strtoul(v, NULL, 10); i++; }
         else if (!strcmp(k, "--depth") && v) { depth = (uint8_t)strtoul(v, NULL, 10); have_depth = 1; i++; }
         else if (!strcmp(k, "--fanout") && v) { fanout = (uint8_t)strtoul(v, NULL, 10); have_fanout = 1; i++; }
         else if (!strcmp(k, "--lsp-seed-hex") && v) {
@@ -235,7 +241,8 @@ int main(int argc, char **argv) {
             SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
         if (!ctx) { fprintf(stderr, "secp256k1_context_create failed\n"); return 1; }
         int rc = run_hierarchical(ctx, depth, fanout, n_users,
-                                   slot_deposit, funding_height, recovery_blocks,
+                                   slot_deposit, funding_height,
+                                   recovery_blocks, activation_blocks,
                                    lsp_seed, user_seed_base);
         secp256k1_context_destroy(ctx);
         return rc;
@@ -261,6 +268,7 @@ int main(int argc, char **argv) {
     f.n_users = n_users;
     f.slot_deposit_sats = slot_deposit;
     f.recovery_offset_blocks = recovery_blocks;
+    f.activation_offset_blocks = activation_blocks;
 
     if (!secp256k1_ec_pubkey_create(ctx, &f.lsp_pubkey, lsp_seed)) {
         fprintf(stderr, "LSP seed → pubkey failed\n");
@@ -288,6 +296,7 @@ int main(int argc, char **argv) {
     printf("slot_deposit_sats=%llu\n", (unsigned long long)f.slot_deposit_sats);
     printf("total_funding_sats=%llu\n", (unsigned long long)f.total_funding_sats);
     printf("recovery_cltv_absolute=%u\n", f.recovery_cltv_absolute);
+    printf("activation_cltv_absolute=%u\n", f.activation_cltv_absolute);
     printf("anchor_vout=%u\n", f.n_users);
     printf("anchor_sats=%u\n", (unsigned int)CTV_FACTORY_ANCHOR_SATS);
 
