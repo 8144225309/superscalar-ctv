@@ -757,3 +757,155 @@ int test_ctv_factory_leaf_spk_matches_user_keyagg(void) {
     secp256k1_context_destroy(ctx);
     return 1;
 }
+
+/* --- Phase C.2 channel commit TX builder (PR-C2b) --- */
+
+/* Helper: derive an x-only pubkey from a 32-byte secret for tests. */
+static int tf_xonly_from_sk(secp256k1_context *ctx,
+                            const unsigned char sk[32],
+                            secp256k1_xonly_pubkey *xonly_out) {
+    secp256k1_pubkey pk;
+    if (!secp256k1_ec_pubkey_create(ctx, &pk, sk)) return 0;
+    return secp256k1_xonly_pubkey_from_pubkey(ctx, xonly_out, NULL, &pk);
+}
+
+/* Builds a channel commit, verifies the byte layout. */
+int test_channel_commit_tx_layout(void) {
+    secp256k1_context *ctx = tf_ctx();
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[0], &lsp_x),  "lsp xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[1], &user_x), "user xonly");
+
+    unsigned char leaf_txid[32];
+    for (int i = 0; i < 32; i++) leaf_txid[i] = (unsigned char)(0x10 + i);
+    uint32_t leaf_vout = 3;
+
+    unsigned char tx[256];
+    size_t tl = sizeof(tx);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               leaf_txid, leaf_vout, &user_x, &lsp_x,
+               /*to_user=*/9000ull, /*to_lsp=*/500ull, ctx, tx, &tl),
+           "build channel commit");
+    ASSERT(tl == 137u, "channel commit legacy TX size is exactly 137 bytes");
+
+    /* Header */
+    ASSERT(tx[0] == 0x02 && tx[1] == 0x00 && tx[2] == 0x00 && tx[3] == 0x00,
+           "nVersion = 2 (LE)");
+    ASSERT(tx[4] == 0x01, "input_count = 1");
+    /* Prevout */
+    ASSERT(memcmp(tx + 5, leaf_txid, 32) == 0, "prevout txid matches");
+    ASSERT(tx[37] == 0x03 && tx[38] == 0 && tx[39] == 0 && tx[40] == 0,
+           "prevout vout = 3 (LE)");
+    ASSERT(tx[41] == 0x00, "scriptSig_len = 0");
+    ASSERT(tx[42] == 0xFE && tx[43] == 0xFF && tx[44] == 0xFF && tx[45] == 0xFF,
+           "nSequence = 0xFFFFFFFE (LE)");
+    /* Outputs */
+    ASSERT(tx[46] == 0x02, "output_count = 2");
+    /* to_user output (43 bytes starting at offset 47) */
+    /* amount = 9000 LE: 0x28 0x23 0x00 ... */
+    ASSERT(tx[47] == 0x28 && tx[48] == 0x23, "to_user amount = 9000");
+    ASSERT(tx[55] == 0x22, "to_user spk_len = 0x22 (34)");
+    ASSERT(tx[56] == 0x51 && tx[57] == 0x20, "to_user is P2TR (OP_1 PUSH32)");
+    /* to_lsp output starts at offset 47 + 43 = 90 */
+    ASSERT(tx[90] == 0xF4 && tx[91] == 0x01, "to_lsp amount = 500");
+    ASSERT(tx[98] == 0x22, "to_lsp spk_len = 0x22");
+    ASSERT(tx[99] == 0x51 && tx[100] == 0x20,
+           "to_lsp is P2TR (OP_1 PUSH32)");
+    /* nLockTime */
+    ASSERT(tx[133]==0 && tx[134]==0 && tx[135]==0 && tx[136]==0,
+           "nLockTime = 0");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Different leaf outpoints produce different TX bytes. */
+int test_channel_commit_tx_depends_on_leaf_outpoint(void) {
+    secp256k1_context *ctx = tf_ctx();
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[0], &lsp_x),  "lsp xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[1], &user_x), "user xonly");
+    unsigned char txid_a[32], txid_b[32];
+    memset(txid_a, 0xAA, 32);
+    memset(txid_b, 0xBB, 32);
+    unsigned char tx_a[200], tx_b[200];
+    size_t la = sizeof(tx_a), lb = sizeof(tx_b);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid_a, 0, &user_x, &lsp_x, 9000ull, 500ull, ctx, tx_a, &la),
+           "build A");
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid_b, 0, &user_x, &lsp_x, 9000ull, 500ull, ctx, tx_b, &lb),
+           "build B");
+    ASSERT(memcmp(tx_a, tx_b, la) != 0,
+           "different leaf_txid must produce different commit bytes");
+
+    /* Also: changing leaf_vout changes bytes */
+    unsigned char tx_c[200]; size_t lc = sizeof(tx_c);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid_a, 7, &user_x, &lsp_x, 9000ull, 500ull, ctx, tx_c, &lc),
+           "build C");
+    ASSERT(memcmp(tx_a, tx_c, la) != 0,
+           "different leaf_vout must produce different commit bytes");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Different balance splits produce different bytes (the amount fields are
+ * included verbatim). */
+int test_channel_commit_tx_depends_on_amounts(void) {
+    secp256k1_context *ctx = tf_ctx();
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[0], &lsp_x),  "lsp xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[1], &user_x), "user xonly");
+    unsigned char txid[32]; memset(txid, 0x55, 32);
+    unsigned char tx1[200], tx2[200];
+    size_t l1 = sizeof(tx1), l2 = sizeof(tx2);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid, 0, &user_x, &lsp_x, 9000ull, 500ull, ctx, tx1, &l1),
+           "build with 9000/500");
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid, 0, &user_x, &lsp_x, 1000ull, 8500ull, ctx, tx2, &l2),
+           "build with 1000/8500");
+    ASSERT(memcmp(tx1, tx2, l1) != 0,
+           "different balance splits must produce different commit bytes");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Different pubkeys produce different bytes (each P2TR output is unique). */
+int test_channel_commit_tx_depends_on_pubkeys(void) {
+    secp256k1_context *ctx = tf_ctx();
+    secp256k1_xonly_pubkey lsp_x, u1_x, u2_x;
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[0], &lsp_x), "lsp xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[1], &u1_x),  "u1 xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[2], &u2_x),  "u2 xonly");
+    unsigned char txid[32]; memset(txid, 0x99, 32);
+    unsigned char tx1[200], tx2[200];
+    size_t l1 = sizeof(tx1), l2 = sizeof(tx2);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid, 0, &u1_x, &lsp_x, 9000ull, 500ull, ctx, tx1, &l1),
+           "build user 1");
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               txid, 0, &u2_x, &lsp_x, 9000ull, 500ull, ctx, tx2, &l2),
+           "build user 2");
+    ASSERT(memcmp(tx1, tx2, l1) != 0,
+           "different to_user xonly must produce different commit bytes");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Too-small buffer must return 0 and set required size. */
+int test_channel_commit_tx_too_small_buffer(void) {
+    secp256k1_context *ctx = tf_ctx();
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[0], &lsp_x),  "lsp xonly");
+    ASSERT(tf_xonly_from_sk(ctx, tf_seckeys[1], &user_x), "user xonly");
+    unsigned char txid[32]; memset(txid, 0x77, 32);
+    unsigned char tx[64];
+    size_t tl = 64;
+    ASSERT(!ctv_factory_build_channel_commit_tx(
+               txid, 0, &user_x, &lsp_x, 9000ull, 500ull, ctx, tx, &tl),
+           "too-small buffer must fail");
+    ASSERT(tl == 137u, "required size written to out param on too-small");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}

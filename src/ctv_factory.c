@@ -736,6 +736,64 @@ int ctv_hier_factory_build_funding_witness(
 }
 
 /* ====================================================================
+ *  Phase C.2 — channel commit TX builder (PR-C2b)
+ * ==================================================================== */
+
+int ctv_factory_build_channel_commit_tx(
+    const unsigned char            leaf_txid[32],
+    uint32_t                       leaf_vout,
+    const secp256k1_xonly_pubkey  *to_user_xonly,
+    const secp256k1_xonly_pubkey  *to_lsp_xonly,
+    uint64_t                       to_user_sats,
+    uint64_t                       to_lsp_sats,
+    const secp256k1_context       *ctx,
+    unsigned char                 *tx_out,
+    size_t                        *tx_len_inout)
+{
+    if (!leaf_txid || !to_user_xonly || !to_lsp_xonly || !ctx
+        || !tx_out || !tx_len_inout) return 0;
+
+    /* Total: 4 + 1 + 36 + 1 + 4 + 1 + 43 + 43 + 4 = 137 bytes. */
+    const size_t need = 137u;
+    if (*tx_len_inout < need) {
+        *tx_len_inout = need;
+        return 0;
+    }
+
+    /* Serialize the two output P2TRs first; if either xonly is malformed
+     * we want to bail before partially writing the TX. */
+    unsigned char to_user_spk[34];
+    unsigned char to_lsp_spk[34];
+    to_user_spk[0] = 0x51;  /* OP_1 */
+    to_user_spk[1] = 0x20;  /* OP_PUSHBYTES_32 */
+    if (!secp256k1_xonly_pubkey_serialize(ctx, to_user_spk + 2, to_user_xonly))
+        return 0;
+    to_lsp_spk[0] = 0x51;
+    to_lsp_spk[1] = 0x20;
+    if (!secp256k1_xonly_pubkey_serialize(ctx, to_lsp_spk + 2, to_lsp_xonly))
+        return 0;
+
+    size_t pos = 0;
+    w_u32_le(tx_out + pos, 2u); pos += 4;             /* nVersion = 2 */
+    tx_out[pos++] = 0x01;                              /* input_count = 1 */
+    memcpy(tx_out + pos, leaf_txid, 32); pos += 32;    /* prevout txid */
+    w_u32_le(tx_out + pos, leaf_vout); pos += 4;       /* prevout vout */
+    tx_out[pos++] = 0x00;                              /* scriptSig_len = 0 */
+    w_u32_le(tx_out + pos, 0xFFFFFFFEu); pos += 4;     /* nSequence */
+    tx_out[pos++] = 0x02;                              /* output_count = 2 */
+
+    /* to_user output (43 bytes) */
+    pos += serialize_output(tx_out + pos, to_user_sats, to_user_spk, 34);
+    /* to_lsp output (43 bytes) */
+    pos += serialize_output(tx_out + pos, to_lsp_sats, to_lsp_spk, 34);
+
+    w_u32_le(tx_out + pos, 0u); pos += 4;              /* nLockTime = 0 */
+
+    *tx_len_inout = pos;
+    return 1;
+}
+
+/* ====================================================================
  *  Phase C.2 — leaf outpoint resolver (PR-C2a)
  * ==================================================================== */
 
