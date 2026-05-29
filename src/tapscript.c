@@ -675,3 +675,154 @@ int compute_keypath_sighash_anyonecanpay(
     free(msg);
     return 1;
 }
+
+/* --- CTV (BIP-119) primitives --- */
+
+/* OP_CHECKTEMPLATEVERIFY = OP_NOP4 = 0xb3, per BIP-119. */
+#define OP_CHECKTEMPLATEVERIFY 0xb3
+
+/* Write a u32 as little-endian into out (4 bytes). */
+static inline void ctv_write_u32_le(unsigned char *out, uint32_t v) {
+    out[0] = (unsigned char)(v & 0xff);
+    out[1] = (unsigned char)((v >>  8) & 0xff);
+    out[2] = (unsigned char)((v >> 16) & 0xff);
+    out[3] = (unsigned char)((v >> 24) & 0xff);
+}
+
+/* Write a signed 32-bit version field, little-endian. */
+static inline void ctv_write_i32_le(unsigned char *out, int32_t v) {
+    ctv_write_u32_le(out, (uint32_t)v);
+}
+
+int ctv_template_hash(
+    int32_t version,
+    uint32_t locktime,
+    uint32_t input_count,
+    const unsigned char sequences_hash[32],
+    uint32_t output_count,
+    const unsigned char outputs_hash[32],
+    uint32_t input_index,
+    unsigned char out_th[32])
+{
+    if (!sequences_hash || !outputs_hash || !out_th) return 0;
+
+    /* BIP-119 DefaultCheckTemplateVerifyHash (segwit case, scriptSigs elided):
+     *   LE32(nVersion) || LE32(nLockTime) || LE32(input_count) ||
+     *   sequences_hash(32) || LE32(output_count) || outputs_hash(32) ||
+     *   LE32(input_index)
+     * Total preimage length: 4+4+4+32+4+32+4 = 84 bytes.
+     */
+    unsigned char preimage[84];
+    size_t pos = 0;
+
+    ctv_write_i32_le(preimage + pos, version);    pos += 4;
+    ctv_write_u32_le(preimage + pos, locktime);   pos += 4;
+    ctv_write_u32_le(preimage + pos, input_count); pos += 4;
+    memcpy(preimage + pos, sequences_hash, 32);   pos += 32;
+    ctv_write_u32_le(preimage + pos, output_count); pos += 4;
+    memcpy(preimage + pos, outputs_hash, 32);     pos += 32;
+    ctv_write_u32_le(preimage + pos, input_index); pos += 4;
+
+    /* (Sanity: pos == 84) */
+    sha256(preimage, pos, out_th);
+    return 1;
+}
+
+int tapscript_build_ctv(
+    tapscript_leaf_t *leaf,
+    const unsigned char th[32])
+{
+    if (!leaf || !th) return 0;
+
+    /* Script bytes (exactly 34):
+     *   0x20      OP_PUSHBYTES_32
+     *   TH[32]    the template hash
+     *   0xb3      OP_CHECKTEMPLATEVERIFY (=OP_NOP4)
+     */
+    size_t pos = 0;
+    leaf->script[pos++] = 0x20;
+    memcpy(leaf->script + pos, th, 32);
+    pos += 32;
+    leaf->script[pos++] = OP_CHECKTEMPLATEVERIFY;
+
+    leaf->script_len = pos;  /* 34 */
+
+    /* Compute and store the leaf hash. */
+    tapscript_compute_leaf_hash(leaf);
+    return 1;
+}
+
+int build_factory_funding_spk(
+    const secp256k1_context *ctx,
+    const musig_keyagg_t   *ka,
+    const unsigned char    *ctv_th,
+    const tapscript_leaf_t *sweep_leaf,
+    unsigned char           spk_out34[34])
+{
+    if (!ctx || !ka || !spk_out34) return 0;
+
+    /* The MuSig2 aggregated key is already x-only (musig_keyagg_t.agg_pubkey).
+     * Serialize it directly for the TapTweak input. */
+    unsigned char internal_ser[32];
+    if (!secp256k1_xonly_pubkey_serialize(ctx, internal_ser, &ka->agg_pubkey))
+        return 0;
+
+    /* Compute the TapTweak per BIP-341:
+     *
+     *   No leaves         → tweak = TaggedHash("TapTweak", internal_ser)
+     *   1 or 2 tap leaves → tweak = TaggedHash("TapTweak", internal_ser || merkle_root)
+     *
+     * The no-leaves case matches today's inline build at
+     * tools/superscalar_lsp.c:3370-3391 byte-for-byte (the regression test
+     * test_funding_spk_legacy_matches_inline asserts this).
+     */
+    unsigned char tweak[32];
+
+    if (ctv_th == NULL && sweep_leaf == NULL) {
+        sha256_tagged("TapTweak", internal_ser, 32, tweak);
+    } else {
+        unsigned char merkle_root[32];
+
+        if (ctv_th && !sweep_leaf) {
+            /* Single CTV leaf — merkle root is the leaf's hash. */
+            tapscript_leaf_t ctv_leaf;
+            if (!tapscript_build_ctv(&ctv_leaf, ctv_th)) return 0;
+            memcpy(merkle_root, ctv_leaf.leaf_hash, 32);
+        } else if (!ctv_th && sweep_leaf) {
+            /* Sweep-only (unusual, but supported): merkle root is the
+             * sweep leaf's hash. */
+            memcpy(merkle_root, sweep_leaf->leaf_hash, 32);
+        } else {
+            /* CTV + sweep: 2-leaf tree.  Use the existing merkle_root helper. */
+            tapscript_leaf_t ctv_leaf;
+            if (!tapscript_build_ctv(&ctv_leaf, ctv_th)) return 0;
+            tapscript_leaf_t leaves[2];
+            leaves[0] = ctv_leaf;
+            leaves[1] = *sweep_leaf;
+            if (!tapscript_merkle_root(merkle_root, leaves, 2))
+                return 0;
+        }
+
+        unsigned char tweak_msg[64];
+        memcpy(tweak_msg,      internal_ser, 32);
+        memcpy(tweak_msg + 32, merkle_root,  32);
+        sha256_tagged("TapTweak", tweak_msg, 64, tweak);
+    }
+
+    /* Apply the tweak to the keyagg's cached MuSig2 aggregate.  The cache is
+     * modified by tweak_add, so operate on a local copy. */
+    musig_keyagg_t ka_copy = *ka;
+    secp256k1_pubkey tweaked_pk;
+    if (!secp256k1_musig_pubkey_xonly_tweak_add(ctx, &tweaked_pk,
+                                                &ka_copy.cache, tweak))
+        return 0;
+
+    secp256k1_xonly_pubkey tweaked_xonly;
+    if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &tweaked_xonly, NULL,
+                                            &tweaked_pk))
+        return 0;
+
+    /* Final P2TR scriptPubKey: OP_1 <PUSHBYTES_32> <tweaked_xonly_key>. */
+    build_p2tr_script_pubkey(spk_out34, &tweaked_xonly);
+    return 1;
+}

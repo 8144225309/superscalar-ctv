@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "tx_builder.h"
+#include "musig.h"
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <stdint.h>
@@ -170,5 +171,88 @@ int compute_keypath_sighash_anyonecanpay(
     uint64_t prev_amount,
     uint32_t nsequence
 );
+
+/* --- CTV (BIP-119) primitives --- */
+
+/*
+ * Compute BIP-119 DefaultCheckTemplateVerifyHash.
+ *
+ * For segwit/taproot inputs (the case for us), the scriptSigs field is
+ * elided per BIP-119: it's only included if any input has a non-empty
+ * scriptSig.  All SuperScalar TXs use witness-only inputs so this field
+ * is always omitted.
+ *
+ * Serialization (84 bytes total, no scriptSigs):
+ *   LE32(nVersion)         (4)
+ *   LE32(nLockTime)        (4)
+ *   LE32(input_count)      (4)
+ *   sequences_hash         (32)
+ *   LE32(output_count)     (4)
+ *   outputs_hash           (32)
+ *   LE32(input_index)      (4)
+ *
+ * TH = sha256(of the above).
+ *
+ * Inputs:
+ *   sequences_hash: sha256(concat(LE32(nSequence_i) for each input)).
+ *   outputs_hash:   sha256(concat(serialize(CTxOut_j) for each output)).
+ *                   Each CTxOut serialization is LE64(amount) ||
+ *                   varint(spk_len) || spk_bytes.
+ *
+ * The caller computes sequences_hash and outputs_hash from actual data.
+ *
+ * Returns 1 on success.
+ */
+int ctv_template_hash(
+    int32_t version,
+    uint32_t locktime,
+    uint32_t input_count,
+    const unsigned char sequences_hash[32],
+    uint32_t output_count,
+    const unsigned char outputs_hash[32],
+    uint32_t input_index,
+    unsigned char out_th[32]);
+
+/*
+ * Build the CTV tap-leaf script:  <32-byte TH> OP_CHECKTEMPLATEVERIFY.
+ *
+ * The resulting script is exactly 34 bytes:
+ *   0x20      (OP_PUSHBYTES_32)
+ *   TH        (32 bytes)
+ *   0xb3      (OP_NOP4 / OP_CHECKTEMPLATEVERIFY)
+ *
+ * The leaf's leaf_hash is also computed and stored.
+ *
+ * Returns 1 on success.
+ */
+int tapscript_build_ctv(
+    tapscript_leaf_t *leaf,
+    const unsigned char th[32]);
+
+/*
+ * Build the factory funding-output scriptPubKey.
+ *
+ * Three modes:
+ *
+ *   Legacy (no CTV):  ctv_th=NULL, sweep_leaf=NULL
+ *     → key-path-only P2TR, byte-identical to today's inline
+ *       construction at tools/superscalar_lsp.c:3370-3391.
+ *
+ *   CTV escape only:  ctv_th!=NULL, sweep_leaf=NULL
+ *     → P2TR with 1 tap leaf: <ctv_th> OP_CTV.
+ *
+ *   CTV escape + LSP sweep:  ctv_th!=NULL, sweep_leaf!=NULL
+ *     → P2TR with 2 tap leaves: the CTV leaf and the sweep leaf.
+ *
+ * The output is a 34-byte P2TR script: OP_1 || PUSHBYTES_32 || tweaked_xonly.
+ *
+ * Returns 1 on success.
+ */
+int build_factory_funding_spk(
+    const secp256k1_context *ctx,
+    const musig_keyagg_t   *ka,
+    const unsigned char    *ctv_th,
+    const tapscript_leaf_t *sweep_leaf,
+    unsigned char           spk_out34[34]);
 
 #endif /* SUPERSCALAR_TAPSCRIPT_H */

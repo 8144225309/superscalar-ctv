@@ -1291,6 +1291,20 @@ extern int test_ctv_parse_no_deployments_is_unknown(void);
 extern int test_ctv_parse_null_and_garbage(void);
 extern int test_ctv_status_str(void);
 
+/* superscalar-ctv: CTV (BIP-119) factory script primitives (Phase A) */
+extern int test_ctv_template_hash_matches_manual_preimage(void);
+extern int test_ctv_template_hash_deterministic(void);
+extern int test_ctv_template_hash_sensitive_to_every_field(void);
+extern int test_ctv_template_hash_null_rejected(void);
+extern int test_tapscript_build_ctv_layout(void);
+extern int test_tapscript_build_ctv_different_th_different_leaf_hash(void);
+extern int test_tapscript_build_ctv_null_rejected(void);
+extern int test_funding_spk_legacy_matches_inline(void);
+extern int test_funding_spk_ctv_only_differs_from_legacy(void);
+extern int test_funding_spk_ctv_plus_sweep_differs_from_ctv_only(void);
+extern int test_funding_spk_deterministic(void);
+extern int test_funding_spk_null_rejected(void);
+
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
 extern int test_reconnect_pubkey_match(void);
@@ -3154,6 +3168,20 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_parse_no_deployments_is_unknown);
     RUN_TEST(test_ctv_parse_null_and_garbage);
     RUN_TEST(test_ctv_status_str);
+
+    printf("\n=== CTV (BIP-119) factory script primitives ===\n");
+    RUN_TEST(test_ctv_template_hash_matches_manual_preimage);
+    RUN_TEST(test_ctv_template_hash_deterministic);
+    RUN_TEST(test_ctv_template_hash_sensitive_to_every_field);
+    RUN_TEST(test_ctv_template_hash_null_rejected);
+    RUN_TEST(test_tapscript_build_ctv_layout);
+    RUN_TEST(test_tapscript_build_ctv_different_th_different_leaf_hash);
+    RUN_TEST(test_tapscript_build_ctv_null_rejected);
+    RUN_TEST(test_funding_spk_legacy_matches_inline);
+    RUN_TEST(test_funding_spk_ctv_only_differs_from_legacy);
+    RUN_TEST(test_funding_spk_ctv_plus_sweep_differs_from_ctv_only);
+    RUN_TEST(test_funding_spk_deterministic);
+    RUN_TEST(test_funding_spk_null_rejected);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);
