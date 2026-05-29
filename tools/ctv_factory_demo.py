@@ -50,6 +50,18 @@ import sys
 import time
 
 
+def txid_rpc_to_wire(txid_hex):
+    """Convert an RPC big-endian display TXID to the little-endian byte
+    order used in the on-wire prevout field.
+
+    Bitcoin's RPC prints TXIDs as the SHA-256-of-SHA-256 result reversed.
+    Inside a TX's prevout, those bytes appear in their natural (little-
+    endian, NOT reversed) order.  Anything that consumes a TXID hex and
+    writes it directly into a prevout — like ctv_factory_build's
+    --funding-txid arg — needs the wire form, not the RPC form."""
+    return bytes.fromhex(txid_hex)[::-1].hex()
+
+
 def run_build_tool(tool_path, extra_args):
     """Run ctv_factory_build with the given args and parse key=value lines."""
     cmd = [tool_path] + extra_args
@@ -249,8 +261,11 @@ def main():
 
     # --- 5. Build segwit dist TX with witness -----------------------------
     print(f"[5/8] building segwit dist TX with CTV-path witness ...")
+    # ctv_factory_build's --funding-txid is wire-format (little-endian);
+    # bitcoin-cli gives us RPC-format (big-endian display).  Convert.
+    funding_txid_wire = txid_rpc_to_wire(funding_txid)
     f2 = run_build_tool(args.build_tool, build_args + [
-        "--funding-txid", funding_txid,
+        "--funding-txid", funding_txid_wire,
         "--funding-vout", str(funding_vout),
     ])
     dist_tx_hex = f2["dist_tx_segwit_hex"]
