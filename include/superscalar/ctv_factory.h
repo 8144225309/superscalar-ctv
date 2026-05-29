@@ -173,4 +173,86 @@ int ctv_factory_verify_dist_tx_th(
     const ctv_factory_t *factory,
     unsigned char        out_th[32]);
 
+
+/* ====================================================================
+ *  Hierarchical CTV factory (Phase C.1)
+ *
+ *  Generalises the single-layer builder above to depth-d trees with
+ *  uniform fan-out K.  Total users = K^depth.  The factory funding
+ *  output's CTV leaf commits to a root-layer dist TX; that TX's K
+ *  outputs each carry their own CTV leaf committing to the next-layer
+ *  dist TX; recursion terminates at the leaf layer where each output
+ *  is a 2-of-2 LSP+user P2TR (the channel funding output shape from
+ *  PR #6).
+ *
+ *  This is what lifts the user cap from 200 (single-layer) into the
+ *  thousands.  Per-user sparse-exit cost scales as O(depth × K)
+ *  vbytes — see CTV_FACTORY_DESIGN.md §3 for the numerics.
+ *
+ *  Note: per-layer LSP-sweep tap leaves (Item #14 of the design — the
+ *  depth-1 sweep) are NOT in this v0 hierarchical builder; we add them
+ *  in a follow-up once the basic tree mechanics are proven.
+ * ==================================================================== */
+
+/* Topological bounds for the hierarchical builder. */
+#define CTV_HIER_FACTORY_MAX_USERS    65536u    /* K=4 depth=8 = 65,536       */
+#define CTV_HIER_FACTORY_MAX_FANOUT   16u
+#define CTV_HIER_FACTORY_MAX_DEPTH    8u
+
+typedef struct {
+    /* --- Inputs (caller fills in) --- */
+
+    uint8_t  depth;                  /* 1..CTV_HIER_FACTORY_MAX_DEPTH       */
+    uint8_t  fanout;                 /* K. 2..CTV_HIER_FACTORY_MAX_FANOUT   */
+    uint32_t n_users;                /* MUST equal fanout^depth             */
+    uint64_t slot_deposit_sats;      /* per-leaf user                       */
+    uint32_t recovery_offset_blocks; /* 0 = no LSP-sweep leaf on funding TX */
+
+    secp256k1_pubkey lsp_pubkey;
+    /* Pointer to caller-owned array of n_users user pubkeys.  Indexing
+     * is left-to-right at the leaf layer: user_pubkeys[0] is the first
+     * leaf of the leftmost leaf-layer subtree; user_pubkeys[n_users-1]
+     * is the rightmost. */
+    const secp256k1_pubkey *user_pubkeys;
+
+    /* --- Computed by ctv_hier_factory_build --- */
+
+    /* Number of internal dist-TX nodes in the tree: (K^d - 1) / (K - 1).
+     * Each consumes one 240-sat P2A anchor from the funding amount. */
+    uint32_t n_internal_nodes;
+
+    /* Total funding required = n_users * slot_deposit + n_internal * 240. */
+    uint64_t total_funding_sats;
+
+    /* Absolute LSP-recovery-sweep block height (0 if no sweep). */
+    uint32_t recovery_cltv_absolute;
+
+    /* Root TH and root keyagg (the funding output's CTV leaf commits to
+     * this TH, and the funding output's internal key is this keyagg). */
+    unsigned char  root_th[32];
+    musig_keyagg_t root_keyagg;
+
+    /* The funding output's 34-byte P2TR scriptPubKey. */
+    unsigned char funding_spk[34];
+} ctv_hier_factory_t;
+
+/*
+ * Build a hierarchical CTV factory.
+ *
+ * Validates that fanout^depth == n_users (uniform tree only in v0).
+ * Then walks the tree bottom-up: at each subtree, computes the
+ * subtree's dist-TX TH, the subtree's keyagg over its users, and the
+ * subtree's output script (P2TR with CTV leaf committing to its TH).
+ *
+ * At the root, builds the funding output's scriptPubKey via the
+ * Phase A helper (with optional LSP-sweep leaf when recovery_offset
+ * is non-zero).
+ *
+ * Returns 1 on success.
+ */
+int ctv_hier_factory_build(
+    const secp256k1_context  *ctx,
+    ctv_hier_factory_t       *factory,
+    uint32_t                  funding_block_height);
+
 #endif /* SUPERSCALAR_CTV_FACTORY_H */
