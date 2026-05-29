@@ -1317,6 +1317,9 @@ extern int test_ctv_factory_dist_tx_too_small_buffer(void);
 extern int test_ctv_factory_build_zero_users_rejected(void);
 extern int test_ctv_factory_build_zero_deposit_rejected(void);
 extern int test_ctv_factory_build_null_rejected(void);
+extern int test_ctv_factory_leaf_spk_depends_on_lsp_pubkey(void);
+extern int test_ctv_factory_user_keyagg_deterministic(void);
+extern int test_ctv_factory_leaf_spk_matches_user_keyagg(void);
 
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
@@ -3208,6 +3211,9 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_factory_build_zero_users_rejected);
     RUN_TEST(test_ctv_factory_build_zero_deposit_rejected);
     RUN_TEST(test_ctv_factory_build_null_rejected);
+    RUN_TEST(test_ctv_factory_leaf_spk_depends_on_lsp_pubkey);
+    RUN_TEST(test_ctv_factory_user_keyagg_deterministic);
+    RUN_TEST(test_ctv_factory_leaf_spk_matches_user_keyagg);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);

@@ -21,24 +21,34 @@ static const unsigned char CTV_FACTORY_ANCHOR_SPK[CTV_FACTORY_ANCHOR_SPK_LEN] = 
     0x51, 0x02, 0x4e, 0x73
 };
 
-/* Build a single user's leaf P2TR scriptPubKey from their pubkey.
- *   spk[34] = OP_1 || OP_PUSHBYTES_32 || x-only(user_pubkey)
- * The user's leaf is key-path-only (no tap leaves), so the output key
- * is just the x-only representation of their pubkey.
+/* Build a single user's leaf as a Lightning channel funding output:
+ * P2TR over a 2-of-2 MuSig2 keyagg of (LSP, user_i).  No tap leaves —
+ * key-path-only, exactly like a standard LN channel funding output today.
  *
- * NOTE: this is intentionally the v0-demo shape (a bare P2TR to the user).
- * The full design has a per-user 2-of-2 LSP+user keyagg with an L-stock
- * sidecar (Items #1, #8 in CTV_FACTORY_DESIGN.md).  That comes in a later
- * phase when we add channels at the leaves. */
-static int build_user_leaf_spk(
+ * Side-output: the per-user keyagg is stored in *keyagg_out so the
+ * Phase C activation ceremony can use it to pre-sign channel commit TXs
+ * against the deferred leaf outpoint.
+ *
+ *   spk[34] = OP_1 || OP_PUSHBYTES_32 || x-only(keyagg(LSP, user_i))
+ *
+ * This is the v0 leaf shape.  The full PS leaf (channel + L-stock split,
+ * with CSV-LSP-sweep on the L-stock — Items #1, #2 in the design) lands
+ * once we add reserve liquidity in a later phase. */
+static int build_user_leaf_spk_2of2(
     const secp256k1_context *ctx,
+    const secp256k1_pubkey  *lsp_pk,
     const secp256k1_pubkey  *user_pk,
+    musig_keyagg_t          *keyagg_out,
     unsigned char            spk_out34[34])
 {
-    secp256k1_xonly_pubkey x;
-    if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &x, NULL, user_pk))
+    secp256k1_pubkey pks[2];
+    pks[0] = *lsp_pk;
+    pks[1] = *user_pk;
+    if (!musig_aggregate_keys(ctx, keyagg_out, pks, 2))
         return 0;
-    build_p2tr_script_pubkey(spk_out34, &x);
+    /* keyagg_out->agg_pubkey is already x-only; serialize directly into
+     * the P2TR scriptPubKey via the existing helper. */
+    build_p2tr_script_pubkey(spk_out34, &keyagg_out->agg_pubkey);
     return 1;
 }
 
@@ -141,10 +151,15 @@ int ctv_factory_build(
     if (!musig_aggregate_keys(ctx, &f->keyagg, all_pks, (size_t)f->n_users + 1u))
         return 0;
 
-    /* Per-user leaf SPKs.  These appear (verbatim) in the dist TX outputs
-     * and are the bytes the BIP-119 TH commits to. */
+    /* Per-user leaf SPKs (P2TR over the 2-of-2 LSP+user keyagg).
+     * These appear verbatim in the dist TX outputs and are the bytes the
+     * BIP-119 TH commits to.  The per-user keyagg is stored in
+     * f->user_keyagg[i] for the activation ceremony to use later. */
     for (uint32_t i = 0; i < f->n_users; i++) {
-        if (!build_user_leaf_spk(ctx, &f->user_pubkeys[i], f->user_spks[i]))
+        if (!build_user_leaf_spk_2of2(ctx, &f->lsp_pubkey,
+                                       &f->user_pubkeys[i],
+                                       &f->user_keyagg[i],
+                                       f->user_spks[i]))
             return 0;
     }
 

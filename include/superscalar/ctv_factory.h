@@ -88,9 +88,28 @@ typedef struct {
      * build_factory_funding_spk with the CTV leaf and (optional) sweep leaf. */
     unsigned char funding_spk[34];
 
-    /* Each user's P2TR scriptPubKey, precomputed at build time.
+    /* Per-user 2-of-2 MuSig2 keyagg over (LSP, user_i).
+     *
+     * The user's leaf P2TR (user_spks[i]) is built over this keyagg's
+     * aggregate x-only key (no script leaves at this layer in v0).  This
+     * makes each leaf a standard Lightning channel funding output:
+     *   - cooperative spend (Phase C): 2-of-2 MuSig2 sig (LSP + user)
+     *   - channel commit pre-signing (Phase C): per-user MuSig2 ceremony
+     *     produces a channel commit TX whose input is the *deferred*
+     *     leaf outpoint (which materializes once the CTV escape fires)
+     *
+     * Stored at factory build time so the activation ceremony can recover
+     * it without recomputing from raw pubkeys. */
+    musig_keyagg_t user_keyagg[CTV_FACTORY_MAX_USERS_SINGLE_LAYER];
+
+    /* Each user's leaf P2TR scriptPubKey, precomputed at build time.
+     *
+     * Built as P2TR over user_keyagg[i].agg_pubkey (the 2-of-2 LSP+user
+     * MuSig2 aggregate).  Key-path-only: there are no tap leaves at the
+     * leaf, exactly like a standard Lightning channel funding output.
+     *
      * dist_tx output i (0-based) has script_pubkey == user_spks[i].
-     * (output n_users is the P2A anchor.) */
+     * (Output n_users is the P2A anchor.) */
     unsigned char user_spks[CTV_FACTORY_MAX_USERS_SINGLE_LAYER][34];
 } ctv_factory_t;
 

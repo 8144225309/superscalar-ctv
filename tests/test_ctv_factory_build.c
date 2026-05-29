@@ -292,3 +292,83 @@ int test_ctv_factory_build_null_rejected(void) {
     secp256k1_context_destroy(ctx);
     return 1;
 }
+
+/* --- 2-of-2 leaf semantics (LSP+user channel funding output) --- */
+
+/* Each leaf's P2TR is now over a 2-of-2 keyagg of (LSP, user_i).  So
+ * changing the LSP's pubkey MUST change every leaf's scriptPubKey too
+ * (this didn't hold under the v0-bare-user leaf shape). */
+int test_ctv_factory_leaf_spk_depends_on_lsp_pubkey(void) {
+    secp256k1_context *ctx = tf_ctx();
+
+    ctv_factory_t a, b;
+    ASSERT(tf_populate(ctx, &a, 4, 10000ull, 0), "populate a");
+    ASSERT(tf_populate(ctx, &b, 4, 10000ull, 0), "populate b");
+
+    /* Replace LSP in `b` with a different secret-key-derived pubkey. */
+    ASSERT(secp256k1_ec_pubkey_create(ctx, &b.lsp_pubkey, tf_seckeys[5]),
+           "swap lsp pubkey");
+
+    ASSERT(ctv_factory_build(ctx, &a, 100u), "build a");
+    ASSERT(ctv_factory_build(ctx, &b, 100u), "build b");
+
+    /* Every user's leaf SPK depends on both LSP key (via keyagg). */
+    for (uint32_t i = 0; i < a.n_users; i++) {
+        ASSERT(memcmp(a.user_spks[i], b.user_spks[i], 34) != 0,
+               "every leaf SPK must change when the LSP pubkey changes");
+    }
+
+    /* And so does dist_tx_th (different outputs → different outputs_hash). */
+    ASSERT(memcmp(a.dist_tx_th, b.dist_tx_th, 32) != 0,
+           "dist_tx_th must change when the LSP pubkey changes");
+
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* The per-user keyagg must be byte-stable across rebuilds (the activation
+ * ceremony later will rely on each side recomputing the same keyagg from
+ * the same (LSP, user_i) pubkeys). */
+int test_ctv_factory_user_keyagg_deterministic(void) {
+    secp256k1_context *ctx = tf_ctx();
+
+    ctv_factory_t a, b;
+    ASSERT(tf_populate(ctx, &a, 4, 10000ull, 0), "populate a");
+    ASSERT(tf_populate(ctx, &b, 4, 10000ull, 0), "populate b");
+
+    ASSERT(ctv_factory_build(ctx, &a, 100u), "build a");
+    ASSERT(ctv_factory_build(ctx, &b, 100u), "build b");
+
+    for (uint32_t i = 0; i < a.n_users; i++) {
+        /* Compare the serialized x-only aggregate pubkey. */
+        unsigned char ax[32], bx[32];
+        ASSERT(secp256k1_xonly_pubkey_serialize(ctx, ax, &a.user_keyagg[i].agg_pubkey),
+               "serialize a");
+        ASSERT(secp256k1_xonly_pubkey_serialize(ctx, bx, &b.user_keyagg[i].agg_pubkey),
+               "serialize b");
+        ASSERT(memcmp(ax, bx, 32) == 0,
+               "user_keyagg[i] must be byte-stable across rebuilds");
+    }
+
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* The user's leaf SPK must equal P2TR over user_keyagg[i].agg_pubkey
+ * (sanity-check the relationship between the stored keyagg and the SPK). */
+int test_ctv_factory_leaf_spk_matches_user_keyagg(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f;
+    ASSERT(tf_populate(ctx, &f, 4, 10000ull, 0), "populate");
+    ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
+
+    for (uint32_t i = 0; i < f.n_users; i++) {
+        unsigned char expected_spk[34];
+        build_p2tr_script_pubkey(expected_spk, &f.user_keyagg[i].agg_pubkey);
+        ASSERT(memcmp(expected_spk, f.user_spks[i], 34) == 0,
+               "user_spks[i] must equal P2TR(user_keyagg[i].agg_pubkey)");
+    }
+
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
