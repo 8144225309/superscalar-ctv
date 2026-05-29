@@ -378,6 +378,61 @@ int ctv_hier_factory_build_funding_witness(
  * Returns 1 on success; sets *tx_len_inout to the required size on
  * too-small-buffer.
  */
+/*
+ * Compute the BIP-341 key-path sighash (SIGHASH_DEFAULT) for a Phase C.2
+ * channel commit TX.
+ *
+ * Inputs:
+ *   commit_tx, commit_tx_len: bytes produced by
+ *     ctv_factory_build_channel_commit_tx() — exactly 137 bytes for v0.
+ *   leaf_spk[34]: the leaf's 34-byte P2TR scriptPubKey (the previous output
+ *     being spent — comes from factory's user_spks[i] field).
+ *   leaf_amount: the leaf's value in sats (= factory->slot_deposit_sats).
+ *
+ * Output:
+ *   sighash_out[32]: the 32-byte BIP-341 message digest, to be signed.
+ *
+ * This is what `musig_sign_taproot` consumes as `msg32`.
+ *
+ * Returns 1 on success.
+ */
+int ctv_factory_compute_channel_commit_sighash(
+    const unsigned char *commit_tx,
+    size_t               commit_tx_len,
+    const unsigned char  leaf_spk[34],
+    uint64_t             leaf_amount,
+    unsigned char        sighash_out[32]);
+
+/*
+ * One-shot Phase C.2 channel commit signing (PR-C2c, all-local demo flow).
+ *
+ * Performs the 2-of-2 MuSig2 ceremony between LSP and user, producing a
+ * 64-byte BIP-340 Schnorr signature that authorizes the channel commit
+ * TX to spend the user's leaf via the key path.
+ *
+ *   leaf_merkle_root: NULL when the leaf has no tap leaves
+ *                    (= activation_offset_blocks == 0 in the factory),
+ *                    or the leaf's tap-tree merkle root otherwise (i.e.
+ *                    the timeout tap leaf hash from PR #13 when set).
+ *
+ * `user_keyagg` is mutated in place by the taproot tweak.  For demos
+ * that need to sign multiple commits with the same keyagg, pass a
+ * working copy of factory->user_keyagg[i].
+ *
+ * Returns 1 on success.
+ */
+int ctv_factory_sign_channel_commit(
+    const secp256k1_context *ctx,
+    const unsigned char     *commit_tx,
+    size_t                   commit_tx_len,
+    const unsigned char      leaf_spk[34],
+    uint64_t                 leaf_amount,
+    const unsigned char      lsp_sk[32],
+    const unsigned char      user_sk[32],
+    musig_keyagg_t          *user_keyagg,
+    const unsigned char     *leaf_merkle_root,
+    unsigned char            sig64_out[64]);
+
 int ctv_factory_build_channel_commit_tx(
     const unsigned char            leaf_txid[32],
     uint32_t                       leaf_vout,

@@ -736,6 +736,115 @@ int ctv_hier_factory_build_funding_witness(
 }
 
 /* ====================================================================
+ *  Phase C.2 — channel commit sighash + signing (PR-C2c)
+ * ==================================================================== */
+
+int ctv_factory_compute_channel_commit_sighash(
+    const unsigned char *commit_tx,
+    size_t               commit_tx_len,
+    const unsigned char  leaf_spk[34],
+    uint64_t             leaf_amount,
+    unsigned char        sighash_out[32])
+{
+    /* The v0 channel commit is always 137 bytes (see PR-C2b layout). */
+    if (!commit_tx || !leaf_spk || !sighash_out) return 0;
+    if (commit_tx_len != 137u) return 0;
+
+    /* Slice the commit TX bytes. */
+    /*   prevout txid: bytes 5..36   (32 bytes)
+     *   prevout vout: bytes 37..40  (4 bytes LE)
+     *   nSequence:    bytes 42..45  (4 bytes LE)
+     *   outputs:      bytes 47..132 (86 bytes — two CTxOut serializations)
+     *   nVersion:     bytes 0..3    (4 bytes LE)
+     *   nLockTime:    bytes 133..136 (4 bytes LE)
+     */
+
+    /* sha_prevouts = sha256(prevout txid(32) || prevout vout(4)) */
+    unsigned char sha_prevouts[32];
+    sha256(commit_tx + 5, 36, sha_prevouts);
+
+    /* sha_amounts = sha256(LE64(leaf_amount)) */
+    unsigned char amt_le[8];
+    w_u64_le(amt_le, leaf_amount);
+    unsigned char sha_amounts[32];
+    sha256(amt_le, 8, sha_amounts);
+
+    /* sha_scriptpubkeys = sha256(varint(34) || leaf_spk(34)) */
+    unsigned char spk_serial[35];
+    spk_serial[0] = 34u;
+    memcpy(spk_serial + 1, leaf_spk, 34);
+    unsigned char sha_scriptpubkeys[32];
+    sha256(spk_serial, 35, sha_scriptpubkeys);
+
+    /* sha_sequences = sha256(LE32(nSequence)) — copied from commit_tx */
+    unsigned char sha_sequences[32];
+    sha256(commit_tx + 42, 4, sha_sequences);
+
+    /* sha_outputs = sha256(outputs section = 86 bytes at offset 47) */
+    unsigned char sha_outputs[32];
+    sha256(commit_tx + 47, 86, sha_outputs);
+
+    /* BIP-341 SIGHASH_DEFAULT key-path message (no extension):
+     *   epoch(1)=0  hash_type(1)=0x00  nVersion(4)  nLockTime(4)
+     *     sha_prevouts(32)  sha_amounts(32)
+     *     sha_scriptpubkeys(32)  sha_sequences(32)  sha_outputs(32)
+     *   spend_type(1)=0x00 (key-path, no annex)
+     *   input_index(4)=0
+     */
+    unsigned char msg[1 + 1 + 4 + 4 + 32 * 5 + 1 + 4];
+    size_t pos = 0;
+    msg[pos++] = 0x00;                              /* epoch */
+    msg[pos++] = 0x00;                              /* hash_type SIGHASH_DEFAULT */
+    memcpy(msg + pos, commit_tx, 4); pos += 4;       /* nVersion */
+    memcpy(msg + pos, commit_tx + commit_tx_len - 4, 4); pos += 4;  /* nLockTime */
+    memcpy(msg + pos, sha_prevouts, 32);      pos += 32;
+    memcpy(msg + pos, sha_amounts, 32);       pos += 32;
+    memcpy(msg + pos, sha_scriptpubkeys, 32); pos += 32;
+    memcpy(msg + pos, sha_sequences, 32);     pos += 32;
+    memcpy(msg + pos, sha_outputs, 32);       pos += 32;
+    msg[pos++] = 0x00;                              /* spend_type (key-path) */
+    w_u32_le(msg + pos, 0u); pos += 4;               /* input_index = 0 */
+
+    sha256_tagged("TapSighash", msg, pos, sighash_out);
+    return 1;
+}
+
+int ctv_factory_sign_channel_commit(
+    const secp256k1_context *ctx,
+    const unsigned char     *commit_tx,
+    size_t                   commit_tx_len,
+    const unsigned char      leaf_spk[34],
+    uint64_t                 leaf_amount,
+    const unsigned char      lsp_sk[32],
+    const unsigned char      user_sk[32],
+    musig_keyagg_t          *user_keyagg,
+    const unsigned char     *leaf_merkle_root,
+    unsigned char            sig64_out[64])
+{
+    if (!ctx || !commit_tx || !leaf_spk || !lsp_sk || !user_sk
+        || !user_keyagg || !sig64_out) return 0;
+
+    /* 1. Compute the BIP-341 sighash for the commit TX. */
+    unsigned char sighash[32];
+    if (!ctv_factory_compute_channel_commit_sighash(
+            commit_tx, commit_tx_len, leaf_spk, leaf_amount, sighash))
+        return 0;
+
+    /* 2. Run all-local 2-of-2 MuSig2 ceremony.  Keypair order MUST
+     * match the order used at factory build time (LSP first, user
+     * second — see build_user_leaf_spk_2of2). */
+    secp256k1_keypair keypairs[2];
+    if (!secp256k1_keypair_create(ctx, &keypairs[0], lsp_sk))  return 0;
+    if (!secp256k1_keypair_create(ctx, &keypairs[1], user_sk)) return 0;
+
+    return musig_sign_taproot(ctx, sig64_out, sighash,
+                               keypairs, 2,
+                               user_keyagg,
+                               leaf_merkle_root);
+}
+
+
+/* ====================================================================
  *  Phase C.2 — channel commit TX builder (PR-C2b)
  * ==================================================================== */
 

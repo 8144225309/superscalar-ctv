@@ -1328,6 +1328,9 @@ extern int test_channel_commit_tx_depends_on_leaf_outpoint(void);
 extern int test_channel_commit_tx_depends_on_amounts(void);
 extern int test_channel_commit_tx_depends_on_pubkeys(void);
 extern int test_channel_commit_tx_too_small_buffer(void);
+extern int test_channel_commit_sighash_deterministic(void);
+extern int test_channel_commit_sighash_depends_on_leaf_context(void);
+extern int test_channel_commit_sign_and_verify(void);
 
 /* superscalar-ctv: funding-output witness + broadcastable dist TX (Phase D-lite) */
 extern int test_funding_witness_no_sweep_layout(void);
@@ -3253,6 +3256,9 @@ static void run_unit_tests(void) {
     RUN_TEST(test_channel_commit_tx_depends_on_amounts);
     RUN_TEST(test_channel_commit_tx_depends_on_pubkeys);
     RUN_TEST(test_channel_commit_tx_too_small_buffer);
+    RUN_TEST(test_channel_commit_sighash_deterministic);
+    RUN_TEST(test_channel_commit_sighash_depends_on_leaf_context);
+    RUN_TEST(test_channel_commit_sign_and_verify);
 
     printf("\n=== CTV factory funding witness + segwit dist TX (Phase D-lite) ===\n");
     RUN_TEST(test_funding_witness_no_sweep_layout);
