@@ -67,6 +67,14 @@ static void usage(const char *prog) {
         "  --funding-vout V         funding outpoint index\n"
         "    If both txid and vout are set, also emits dist_tx_segwit_hex.\n"
         "\n"
+        "Phase C.2d — single-user channel commit signing (single-layer only):\n"
+        "  --channel-sign           emit a signed channel commit for one user\n"
+        "  --channel-user I         which user (0..N-1)\n"
+        "  --to-user-sats X         channel balance to user (sats)\n"
+        "  --to-lsp-sats Y          channel balance to LSP   (sats)\n"
+        "    Requires --funding-txid + --funding-vout.\n"
+        "    Only supported when --activation-blocks 0 (key-path-only leaf).\n"
+        "\n"
         "Hierarchical mode (when --depth and --fanout supplied):\n"
         "  --depth D                tree depth (1..%u)\n"
         "  --fanout K               tree fanout (2..%u)\n"
@@ -186,6 +194,11 @@ int main(int argc, char **argv) {
     int have_fanout = 0;
     uint8_t depth = 0;
     uint8_t fanout = 0;
+    /* Phase C.2d: channel commit signing for a single user. */
+    int channel_sign = 0;
+    uint32_t channel_user = 0;
+    uint64_t to_user_sats = 0;
+    uint64_t to_lsp_sats  = 0;
 
     /* --- parse argv --- */
     for (int i = 1; i < argc; i++) {
@@ -209,6 +222,10 @@ int main(int argc, char **argv) {
             i++;
         }
         else if (!strcmp(k, "--funding-vout") && v) { funding_vout = (uint32_t)strtoul(v, NULL, 10); have_funding_outpoint |= 2; i++; }
+        else if (!strcmp(k, "--channel-sign")) { channel_sign = 1; }
+        else if (!strcmp(k, "--channel-user") && v) { channel_user = (uint32_t)strtoul(v, NULL, 10); i++; }
+        else if (!strcmp(k, "--to-user-sats") && v) { to_user_sats = (uint64_t)strtoull(v, NULL, 10); i++; }
+        else if (!strcmp(k, "--to-lsp-sats") && v) { to_lsp_sats = (uint64_t)strtoull(v, NULL, 10); i++; }
         else if (!strcmp(k, "-h") || !strcmp(k, "--help")) { usage(argv[0]); return 0; }
         else { fprintf(stderr, "unknown arg: %s\n", k); usage(argv[0]); return 2; }
     }
@@ -325,6 +342,99 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "warn: only one of --funding-txid/--funding-vout supplied; "
                 "skipping dist TX emission\n");
+    }
+
+    /* --- Phase C.2d: optional per-user channel commit signing --- */
+    if (channel_sign) {
+        if (have_funding_outpoint != 3) {
+            fprintf(stderr, "--channel-sign requires --funding-txid + --funding-vout\n");
+            secp256k1_context_destroy(ctx);
+            return 2;
+        }
+        if (channel_user >= f.n_users) {
+            fprintf(stderr, "--channel-user %u out of range (n_users=%u)\n",
+                    channel_user, f.n_users);
+            secp256k1_context_destroy(ctx);
+            return 2;
+        }
+        if (to_user_sats + to_lsp_sats == 0u) {
+            fprintf(stderr, "--to-user-sats + --to-lsp-sats must be > 0\n");
+            secp256k1_context_destroy(ctx);
+            return 2;
+        }
+        if (activation_blocks != 0u) {
+            fprintf(stderr,
+                "--channel-sign with --activation-blocks > 0 not yet supported "
+                "(leaf tap-tree merkle root not exposed); use 0 for now\n");
+            secp256k1_context_destroy(ctx);
+            return 2;
+        }
+
+        /* 1. leaf outpoint */
+        unsigned char leaf_txid[32];
+        uint32_t      leaf_vout = 0;
+        if (!ctv_factory_compute_leaf_outpoint(
+                &f, channel_user, funding_txid, funding_vout,
+                leaf_txid, &leaf_vout)) {
+            fprintf(stderr, "ctv_factory_compute_leaf_outpoint failed\n");
+            secp256k1_context_destroy(ctx);
+            return 1;
+        }
+
+        /* 2. xonly keys for the commit outputs */
+        secp256k1_xonly_pubkey user_x, lsp_x;
+        if (!secp256k1_xonly_pubkey_from_pubkey(
+                ctx, &user_x, NULL, &f.user_pubkeys[channel_user])) {
+            fprintf(stderr, "xonly user pubkey failed\n");
+            secp256k1_context_destroy(ctx); return 1;
+        }
+        if (!secp256k1_xonly_pubkey_from_pubkey(
+                ctx, &lsp_x, NULL, &f.lsp_pubkey)) {
+            fprintf(stderr, "xonly LSP pubkey failed\n");
+            secp256k1_context_destroy(ctx); return 1;
+        }
+
+        /* 3. commit TX */
+        unsigned char commit_tx[160];
+        size_t        commit_tx_len = sizeof(commit_tx);
+        if (!ctv_factory_build_channel_commit_tx(
+                leaf_txid, leaf_vout, &user_x, &lsp_x,
+                to_user_sats, to_lsp_sats, ctx,
+                commit_tx, &commit_tx_len)) {
+            fprintf(stderr, "ctv_factory_build_channel_commit_tx failed\n");
+            secp256k1_context_destroy(ctx); return 1;
+        }
+
+        /* 4. sign with 2-of-2 (LSP holds both secret-key halves in this demo) */
+        unsigned char user_sk[32];
+        derive_user_seed(user_seed_base, channel_user, user_sk);
+        unsigned char sig64[64];
+        if (!ctv_factory_sign_channel_commit(
+                ctx, commit_tx, commit_tx_len,
+                f.user_spks[channel_user], f.slot_deposit_sats,
+                lsp_seed, user_sk,
+                &f.user_keyagg[channel_user],
+                /*leaf_merkle_root=*/NULL,
+                sig64)) {
+            fprintf(stderr, "ctv_factory_sign_channel_commit failed\n");
+            secp256k1_context_destroy(ctx); return 1;
+        }
+
+        /* 5. emit */
+        printf("channel_user_index=%u\n", channel_user);
+        printf("channel_to_user_sats=%llu\n", (unsigned long long)to_user_sats);
+        printf("channel_to_lsp_sats=%llu\n",  (unsigned long long)to_lsp_sats);
+        printf("leaf_txid_hex=");
+        hex_print(leaf_txid, 32);
+        printf("\n");
+        printf("leaf_vout=%u\n", leaf_vout);
+        printf("channel_commit_tx_hex=");
+        hex_print(commit_tx, commit_tx_len);
+        printf("\n");
+        printf("channel_commit_tx_bytes=%zu\n", commit_tx_len);
+        printf("channel_commit_sig_hex=");
+        hex_print(sig64, 64);
+        printf("\n");
     }
 
     secp256k1_context_destroy(ctx);

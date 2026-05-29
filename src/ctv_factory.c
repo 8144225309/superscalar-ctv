@@ -735,6 +735,37 @@ int ctv_hier_factory_build_funding_witness(
                                    sweep_ptr, witness_out, witness_len_inout);
 }
 
+/* Compute the deferred leaf outpoint for user_index in a single-layer
+ * factory.  Sibling of ctv_hier_factory_compute_leaf_outpoint. */
+int ctv_factory_compute_leaf_outpoint(
+    const ctv_factory_t  *f,
+    uint32_t              user_index,
+    const unsigned char   funding_txid[32],
+    uint32_t              funding_vout,
+    unsigned char         out_leaf_txid[32],
+    uint32_t             *out_leaf_vout)
+{
+    if (!f || !funding_txid || !out_leaf_txid || !out_leaf_vout) return 0;
+    if (user_index >= f->n_users) return 0;
+
+    /* Build the legacy (no-witness) dist TX serialization.
+     * Layout: 4(version) + 1(in_count) + 36(prevout) + 1(scriptSig_len)
+     *         + 4(nSequence) + 1(out_count) + N*43(user outs)
+     *         + 13(anchor) + 4(nLockTime).  Slack: +256. */
+    unsigned char tx[CTV_FACTORY_MAX_USERS_SINGLE_LAYER * 43u + 256u];
+    size_t tlen = sizeof(tx);
+    if (!ctv_factory_build_dist_tx(f, funding_txid, funding_vout, tx, &tlen))
+        return 0;
+
+    /* TXID = sha256d of legacy serialization. */
+    unsigned char first[32];
+    sha256(tx, tlen, first);
+    sha256(first, 32, out_leaf_txid);
+
+    *out_leaf_vout = user_index;
+    return 1;
+}
+
 /* ====================================================================
  *  Phase C.2 — channel commit sighash + signing (PR-C2c)
  * ==================================================================== */
