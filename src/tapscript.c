@@ -193,13 +193,20 @@ int tapscript_tweak_pubkey(
     if (!secp256k1_xonly_pubkey_serialize(ctx, internal_ser, internal_key))
         return 0;
 
-    /* TapTweak = tagged_hash("TapTweak", internal_key || merkle_root) */
+    /* BIP-341 TapTweak:
+     *   t = H_TapTweak(P || k)  if there's a script tree (k = merkle root)
+     *   t = H_TapTweak(P)       if key-path-only (no script tree)
+     * Callers signal key-path-only by passing merkle_root32 == NULL. */
     unsigned char tweak_data[64];
     memcpy(tweak_data, internal_ser, 32);
-    memcpy(tweak_data + 32, merkle_root32, 32);
+    size_t tweak_data_len = 32;
+    if (merkle_root32) {
+        memcpy(tweak_data + 32, merkle_root32, 32);
+        tweak_data_len = 64;
+    }
 
     unsigned char tweak[32];
-    sha256_tagged("TapTweak", tweak_data, 64, tweak);
+    sha256_tagged("TapTweak", tweak_data, tweak_data_len, tweak);
 
     secp256k1_pubkey tweaked_full;
     if (!secp256k1_xonly_pubkey_tweak_add(ctx, &tweaked_full, internal_key, tweak))
