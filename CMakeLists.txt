@@ -130,6 +130,7 @@ add_library(superscalar
     src/util.c
     src/factory.c
     src/tapscript.c
+    src/ctv_factory.c
     src/shachain.c
     src/channel.c
     src/adaptor.c
@@ -341,6 +342,7 @@ add_executable(test_superscalar
     tests/test_prometheus.c
     tests/test_ctv_detect.c
     tests/test_ctv_factory.c
+    tests/test_ctv_factory_build.c
 )
 target_include_directories(test_superscalar PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
 target_include_directories(test_superscalar PRIVATE ${cjson_SOURCE_DIR})

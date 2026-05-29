@@ -1305,6 +1305,19 @@ extern int test_funding_spk_ctv_plus_sweep_differs_from_ctv_only(void);
 extern int test_funding_spk_deterministic(void);
 extern int test_funding_spk_null_rejected(void);
 
+/* superscalar-ctv: CTV factory builder (Phase B, single-layer) */
+extern int test_ctv_factory_build_basic(void);
+extern int test_ctv_factory_recovery_offset_computes_absolute(void);
+extern int test_ctv_factory_sweep_changes_funding_spk(void);
+extern int test_ctv_factory_build_deterministic(void);
+extern int test_ctv_factory_user_change_changes_th(void);
+extern int test_ctv_factory_verify_th_self_consistent(void);
+extern int test_ctv_factory_dist_tx_serialization_shape(void);
+extern int test_ctv_factory_dist_tx_too_small_buffer(void);
+extern int test_ctv_factory_build_zero_users_rejected(void);
+extern int test_ctv_factory_build_zero_deposit_rejected(void);
+extern int test_ctv_factory_build_null_rejected(void);
+
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
 extern int test_reconnect_pubkey_match(void);
@@ -3182,6 +3195,19 @@ static void run_unit_tests(void) {
     RUN_TEST(test_funding_spk_ctv_plus_sweep_differs_from_ctv_only);
     RUN_TEST(test_funding_spk_deterministic);
     RUN_TEST(test_funding_spk_null_rejected);
+
+    printf("\n=== CTV factory builder (Phase B, single-layer) ===\n");
+    RUN_TEST(test_ctv_factory_build_basic);
+    RUN_TEST(test_ctv_factory_recovery_offset_computes_absolute);
+    RUN_TEST(test_ctv_factory_sweep_changes_funding_spk);
+    RUN_TEST(test_ctv_factory_build_deterministic);
+    RUN_TEST(test_ctv_factory_user_change_changes_th);
+    RUN_TEST(test_ctv_factory_verify_th_self_consistent);
+    RUN_TEST(test_ctv_factory_dist_tx_serialization_shape);
+    RUN_TEST(test_ctv_factory_dist_tx_too_small_buffer);
+    RUN_TEST(test_ctv_factory_build_zero_users_rejected);
+    RUN_TEST(test_ctv_factory_build_zero_deposit_rejected);
+    RUN_TEST(test_ctv_factory_build_null_rejected);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);
