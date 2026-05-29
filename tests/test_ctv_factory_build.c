@@ -893,6 +893,152 @@ int test_channel_commit_tx_depends_on_pubkeys(void) {
     return 1;
 }
 
+/* --- Phase C.2 channel commit sighash + signing (PR-C2c) --- */
+
+/* Helper: build factory at N=4 with default settings, return the index-0
+ * user's leaf data (spk + amount + keyagg + user/lsp sks). */
+typedef struct {
+    secp256k1_context     *ctx;
+    ctv_factory_t          factory;
+    unsigned char          leaf_spk[34];
+    uint64_t               leaf_amount;
+    musig_keyagg_t         user_keyagg;
+    const unsigned char   *lsp_sk;
+    const unsigned char   *user_sk;
+} cc_test_fixture_t;
+
+static int cc_fixture_init(cc_test_fixture_t *fx) {
+    fx->ctx = tf_ctx();
+    if (!fx->ctx) return 0;
+    if (!tf_populate(fx->ctx, &fx->factory, 4, 10000ull, 0)) return 0;
+    if (!ctv_factory_build(fx->ctx, &fx->factory, 100u)) return 0;
+    memcpy(fx->leaf_spk, fx->factory.user_spks[0], 34);
+    fx->leaf_amount = fx->factory.slot_deposit_sats;
+    fx->user_keyagg = fx->factory.user_keyagg[0];
+    fx->lsp_sk  = tf_seckeys[0];
+    fx->user_sk = tf_seckeys[1];
+    return 1;
+}
+
+static void cc_fixture_free(cc_test_fixture_t *fx) {
+    secp256k1_context_destroy(fx->ctx);
+}
+
+/* sighash is deterministic for fixed inputs. */
+int test_channel_commit_sighash_deterministic(void) {
+    cc_test_fixture_t fx;
+    ASSERT(cc_fixture_init(&fx), "fixture");
+
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[2], &user_x), "user xonly");
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[3], &lsp_x),  "lsp xonly");
+
+    unsigned char leaf_txid[32]; memset(leaf_txid, 0x33, 32);
+    unsigned char tx[200]; size_t tl = sizeof(tx);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               leaf_txid, 0, &user_x, &lsp_x, 9000ull, 500ull,
+               fx.ctx, tx, &tl), "build commit");
+
+    unsigned char sh_a[32], sh_b[32];
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, fx.leaf_spk, fx.leaf_amount, sh_a), "sighash A");
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, fx.leaf_spk, fx.leaf_amount, sh_b), "sighash B");
+    ASSERT(memcmp(sh_a, sh_b, 32) == 0, "same inputs → same sighash");
+    cc_fixture_free(&fx);
+    return 1;
+}
+
+/* sighash depends on the leaf_spk and leaf_amount being signed against. */
+int test_channel_commit_sighash_depends_on_leaf_context(void) {
+    cc_test_fixture_t fx;
+    ASSERT(cc_fixture_init(&fx), "fixture");
+
+    secp256k1_xonly_pubkey user_x, lsp_x;
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[2], &user_x), "user xonly");
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[3], &lsp_x),  "lsp xonly");
+    unsigned char leaf_txid[32]; memset(leaf_txid, 0x44, 32);
+    unsigned char tx[200]; size_t tl = sizeof(tx);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               leaf_txid, 0, &user_x, &lsp_x, 9000ull, 500ull,
+               fx.ctx, tx, &tl), "build commit");
+
+    unsigned char sh_a[32], sh_b[32];
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, fx.leaf_spk, /*amount=*/10000ull, sh_a),
+           "sighash amount=10000");
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, fx.leaf_spk, /*amount=*/20000ull, sh_b),
+           "sighash amount=20000");
+    ASSERT(memcmp(sh_a, sh_b, 32) != 0,
+           "different leaf_amount → different sighash");
+
+    unsigned char alt_spk[34];
+    memcpy(alt_spk, fx.leaf_spk, 34);
+    alt_spk[2] ^= 0x01;  /* flip a bit in the x-only key */
+    unsigned char sh_c[32];
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, alt_spk, fx.leaf_amount, sh_c),
+           "sighash alt_spk");
+    ASSERT(memcmp(sh_a, sh_c, 32) != 0,
+           "different leaf_spk → different sighash");
+    cc_fixture_free(&fx);
+    return 1;
+}
+
+/* HEADLINE: end-to-end sign + verify.  Build commit, sign with 2-of-2
+ * MuSig2 over the user_keyagg, verify the resulting 64-byte sig against
+ * the leaf's tweaked x-only key.  Round-trip the whole signing flow. */
+int test_channel_commit_sign_and_verify(void) {
+    cc_test_fixture_t fx;
+    ASSERT(cc_fixture_init(&fx), "fixture");
+
+    /* to_user / to_lsp xonly keys for the commit's outputs.  These don't
+     * have to relate to the leaf keys; they're just where the commit pays. */
+    secp256k1_xonly_pubkey to_user_x, to_lsp_x;
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[2], &to_user_x), "to_user xonly");
+    ASSERT(tf_xonly_from_sk(fx.ctx, tf_seckeys[3], &to_lsp_x),  "to_lsp xonly");
+
+    unsigned char leaf_txid[32]; memset(leaf_txid, 0x55, 32);
+    unsigned char tx[200]; size_t tl = sizeof(tx);
+    ASSERT(ctv_factory_build_channel_commit_tx(
+               leaf_txid, 0, &to_user_x, &to_lsp_x, 9000ull, 500ull,
+               fx.ctx, tx, &tl), "build commit");
+
+    /* Sign with the LSP + user keys (factory default seeds). */
+    musig_keyagg_t keyagg_working = fx.user_keyagg;
+    unsigned char sig[64];
+    ASSERT(ctv_factory_sign_channel_commit(
+               fx.ctx, tx, tl, fx.leaf_spk, fx.leaf_amount,
+               fx.lsp_sk, fx.user_sk, &keyagg_working,
+               /*merkle_root=*/NULL,
+               sig), "sign commit");
+
+    /* Compute the sighash again for verification. */
+    unsigned char sighash[32];
+    ASSERT(ctv_factory_compute_channel_commit_sighash(
+               tx, tl, fx.leaf_spk, fx.leaf_amount, sighash),
+           "recompute sighash");
+
+    /* The leaf is key-path-only (activation_offset_blocks=0), so the
+     * signature verifies against the TAPROOT-TWEAKED x-only key, NOT
+     * the raw keyagg.  For a key-path-only P2TR, the tweak uses
+     * merkle_root = empty (NULL in tapscript_tweak_pubkey terms). */
+    secp256k1_xonly_pubkey tweaked;
+    int parity = 0;
+    ASSERT(tapscript_tweak_pubkey(fx.ctx, &tweaked, &parity,
+                                   &fx.user_keyagg.agg_pubkey,
+                                   /*merkle_root=*/NULL),
+           "compute tweaked output key");
+
+    /* BIP-340 Schnorr verify */
+    ASSERT(secp256k1_schnorrsig_verify(fx.ctx, sig, sighash, 32, &tweaked),
+           "Schnorr signature verifies against tweaked leaf key");
+
+    cc_fixture_free(&fx);
+    return 1;
+}
+
 /* Too-small buffer must return 0 and set required size. */
 int test_channel_commit_tx_too_small_buffer(void) {
     secp256k1_context *ctx = tf_ctx();
