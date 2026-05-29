@@ -127,11 +127,15 @@ def build_cpfp_child(cli_args, dist_txid, anchor_vout, anchor_sats,
 
     Uses bitcoin-cli's wallet for fee selection and signing.
     """
-    # 1. Base TX: just the anchor input.  Outputs added by fundrawtransaction.
+    # 1. Base TX: anchor input + placeholder output equal to the anchor sats,
+    #    going to the LSP change address.  Bitcoin Core's createrawtransaction
+    #    rejects empty outputs (error -8 "TX must have at least one output"),
+    #    so we seed one and let fundrawtransaction add a wallet fee input and
+    #    a real wallet change output alongside.
     base_hex = cli(cli_args, "createrawtransaction",
                    [{"txid": dist_txid, "vout": anchor_vout,
                      "sequence": 0xFFFFFFFE}],
-                   [])
+                   [{lsp_change_address: f"{anchor_sats / 1e8:.8f}"}])
 
     # 2. Have the wallet add a fee input + change output.  Tell it the
     #    P2A anchor's weight so it doesn't undershoot the fee.
