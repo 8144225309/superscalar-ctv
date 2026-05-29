@@ -22,22 +22,30 @@ static const unsigned char CTV_FACTORY_ANCHOR_SPK[CTV_FACTORY_ANCHOR_SPK_LEN] = 
 };
 
 /* Build a single user's leaf as a Lightning channel funding output:
- * P2TR over a 2-of-2 MuSig2 keyagg of (LSP, user_i).  No tap leaves —
- * key-path-only, exactly like a standard LN channel funding output today.
+ * P2TR over a 2-of-2 MuSig2 keyagg of (LSP, user_i).
+ *
+ * Key path = 2-of-2 LSP+user (standard LN channel funding, used for
+ * cooperative + unilateral channel close).
+ *
+ * If activation_cltv > 0, ALSO commits a single tap leaf:
+ *   <activation_cltv> OP_CLTV OP_DROP <LSP_xonly> OP_CHECKSIG
+ *
+ * This is the LEAF-LEVEL activation timeout (anti-griefing): if the user
+ * has not engaged in Phase C.2 channel-commit signing by activation_cltv,
+ * the LSP can sweep their slot back via the tap leaf path.  Legitimate
+ * users defeat the timeout by broadcasting their pre-signed channel
+ * commit (which consumes the leaf via key path).
+ *
+ * Default (activation_cltv == 0): no tap leaf, byte-identical to PR #6's
+ * key-path-only leaf.  Backward compatible.
  *
  * Side-output: the per-user keyagg is stored in *keyagg_out so the
- * Phase C activation ceremony can use it to pre-sign channel commit TXs
- * against the deferred leaf outpoint.
- *
- *   spk[34] = OP_1 || OP_PUSHBYTES_32 || x-only(keyagg(LSP, user_i))
- *
- * This is the v0 leaf shape.  The full PS leaf (channel + L-stock split,
- * with CSV-LSP-sweep on the L-stock — Items #1, #2 in the design) lands
- * once we add reserve liquidity in a later phase. */
+ * Phase C.2 activation ceremony can use it to pre-sign channel commits. */
 static int build_user_leaf_spk_2of2(
     const secp256k1_context *ctx,
     const secp256k1_pubkey  *lsp_pk,
     const secp256k1_pubkey  *user_pk,
+    uint32_t                 activation_cltv,
     musig_keyagg_t          *keyagg_out,
     unsigned char            spk_out34[34])
 {
@@ -46,10 +54,32 @@ static int build_user_leaf_spk_2of2(
     pks[1] = *user_pk;
     if (!musig_aggregate_keys(ctx, keyagg_out, pks, 2))
         return 0;
-    /* keyagg_out->agg_pubkey is already x-only; serialize directly into
-     * the P2TR scriptPubKey via the existing helper. */
-    build_p2tr_script_pubkey(spk_out34, &keyagg_out->agg_pubkey);
-    return 1;
+
+    if (activation_cltv == 0u) {
+        /* No leaf-level timeout — key-path-only P2TR over the 2-of-2.
+         * Byte-identical to PR #6's original leaf. */
+        build_p2tr_script_pubkey(spk_out34, &keyagg_out->agg_pubkey);
+        return 1;
+    }
+
+    /* Build the LSP-only timeout tap leaf and tweak. */
+    secp256k1_xonly_pubkey lsp_xonly;
+    if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &lsp_xonly, NULL, lsp_pk))
+        return 0;
+    tapscript_leaf_t timeout_leaf;
+    if (!tapscript_build_cltv_timeout(&timeout_leaf, activation_cltv,
+                                       &lsp_xonly, ctx))
+        return 0;
+    /* Single-leaf tap tree → merkle root == leaf hash. */
+    secp256k1_xonly_pubkey tweaked;
+    int parity = 0;
+    if (!tapscript_tweak_pubkey(ctx, &tweaked, &parity,
+                                 &keyagg_out->agg_pubkey,
+                                 timeout_leaf.leaf_hash))
+        return 0;
+    spk_out34[0] = 0x51;  /* OP_1 */
+    spk_out34[1] = 0x20;  /* OP_PUSHBYTES_32 */
+    return secp256k1_xonly_pubkey_serialize(ctx, spk_out34 + 2, &tweaked);
 }
 
 /* Serialize one CTxOut into `dest`, returning bytes written.
@@ -142,6 +172,11 @@ int ctv_factory_build(
                                 ? 0u
                                 : funding_block_height + f->recovery_offset_blocks;
 
+    /* Absolute leaf-level activation timeout (anti-griefing), if requested. */
+    f->activation_cltv_absolute = (f->activation_offset_blocks == 0u)
+                                  ? 0u
+                                  : funding_block_height + f->activation_offset_blocks;
+
     /* Aggregate keys: LSP at index 0, users at 1..n_users.  This is the
      * factory's cooperative-close key path. */
     secp256k1_pubkey all_pks[CTV_FACTORY_MAX_USERS_SINGLE_LAYER + 1];
@@ -158,6 +193,7 @@ int ctv_factory_build(
     for (uint32_t i = 0; i < f->n_users; i++) {
         if (!build_user_leaf_spk_2of2(ctx, &f->lsp_pubkey,
                                        &f->user_pubkeys[i],
+                                       f->activation_cltv_absolute,
                                        &f->user_keyagg[i],
                                        f->user_spks[i]))
             return 0;
@@ -511,6 +547,7 @@ static int hier_build_subtree(
     uint8_t                  fanout,
     uint8_t                  depth_remaining,
     uint64_t                 slot_deposit,
+    uint32_t                 activation_cltv,  /* 0 = no leaf-level timeout */
     unsigned char            out_th[32],
     musig_keyagg_t          *out_keyagg,
     unsigned char            out_spk[34],
@@ -537,11 +574,13 @@ static int hier_build_subtree(
     uint64_t total_amount = 0;
 
     if (depth_remaining == 0u) {
-        /* Leaf layer: K user outputs (2-of-2 LSP+user_i P2TRs). */
+        /* Leaf layer: K user outputs (2-of-2 LSP+user_i P2TRs, with the
+         * leaf-level activation timeout tap leaf if activation_cltv > 0). */
         for (uint32_t i = 0; i < fanout; i++) {
             unsigned char  leaf_spk[34];
             musig_keyagg_t leaf_keyagg;
             if (!build_user_leaf_spk_2of2(ctx, lsp_pk, &users_slice[i],
+                                           activation_cltv,
                                            &leaf_keyagg, leaf_spk))
                 return 0;
             pos += serialize_output(outputs_buf + pos, slot_deposit,
@@ -560,7 +599,7 @@ static int hier_build_subtree(
                                      users_slice + (size_t)i * users_per_child,
                                      users_per_child, fanout,
                                      (uint8_t)(depth_remaining - 1u),
-                                     slot_deposit,
+                                     slot_deposit, activation_cltv,
                                      child_th, &child_keyagg, child_spk,
                                      &child_amount))
                 return 0;
@@ -639,6 +678,11 @@ int ctv_hier_factory_build(
                                 ? 0u
                                 : funding_block_height + f->recovery_offset_blocks;
 
+    /* Absolute leaf-level activation timeout (anti-griefing). */
+    f->activation_cltv_absolute = (f->activation_offset_blocks == 0u)
+                                  ? 0u
+                                  : funding_block_height + f->activation_offset_blocks;
+
     /* Recursive bottom-up build.  Top-level depth_remaining = depth - 1
      * so that depth=1 → leaf layer dist TX directly off the funding output. */
     unsigned char unused_spk[34];
@@ -647,6 +691,7 @@ int ctv_hier_factory_build(
                              f->user_pubkeys, f->n_users, f->fanout,
                              (uint8_t)(f->depth - 1u),
                              f->slot_deposit_sats,
+                             f->activation_cltv_absolute,
                              f->root_th, &f->root_keyagg,
                              unused_spk, &unused_amount))
         return 0;

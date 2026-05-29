@@ -674,6 +674,71 @@ int test_hier_funding_witness_round_trips(void) {
     return 1;
 }
 
+/* --- leaf-level activation timeout (insight #13, anti-griefing) --- */
+
+int test_ctv_factory_leaf_timeout_zero_offset_is_backward_compatible(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f_default;
+    ASSERT(tf_populate(ctx, &f_default, 4, 10000ull, 0), "populate default");
+    f_default.activation_offset_blocks = 0;
+    ASSERT(ctv_factory_build(ctx, &f_default, 100u), "build default");
+    for (uint32_t i = 0; i < f_default.n_users; i++) {
+        unsigned char expected_spk[34];
+        build_p2tr_script_pubkey(expected_spk, &f_default.user_keyagg[i].agg_pubkey);
+        ASSERT(memcmp(expected_spk, f_default.user_spks[i], 34) == 0,
+               "default leaf_spk[i] must equal P2TR(user_keyagg[i].agg_pubkey)");
+    }
+    ASSERT(f_default.activation_cltv_absolute == 0u,
+           "activation_cltv_absolute = 0 when no offset");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+int test_ctv_factory_leaf_timeout_changes_leaf_spk(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f0, f1;
+    ASSERT(tf_populate(ctx, &f0, 4, 10000ull, 0), "populate f0");
+    ASSERT(tf_populate(ctx, &f1, 4, 10000ull, 0), "populate f1");
+    f0.activation_offset_blocks = 0;
+    f1.activation_offset_blocks = 1008;
+    ASSERT(ctv_factory_build(ctx, &f0, 100u), "build f0");
+    ASSERT(ctv_factory_build(ctx, &f1, 100u), "build f1");
+    ASSERT(f1.activation_cltv_absolute == 100u + 1008u,
+           "activation_cltv_absolute = funding_height + offset");
+    for (uint32_t i = 0; i < f0.n_users; i++) {
+        ASSERT(memcmp(f0.user_spks[i], f1.user_spks[i], 34) != 0,
+               "activation timeout must change every user leaf SPK");
+    }
+    ASSERT(memcmp(f0.dist_tx_th, f1.dist_tx_th, 32) != 0,
+           "activation timeout must change dist_tx_th (via outputs_hash)");
+    ASSERT(memcmp(f0.funding_spk + 2, f1.funding_spk + 2, 32) != 0,
+           "activation timeout must change funding_spk (via TH)");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+int test_ctv_factory_leaf_timeout_keyagg_unchanged(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f0, f1;
+    ASSERT(tf_populate(ctx, &f0, 4, 10000ull, 0), "populate f0");
+    ASSERT(tf_populate(ctx, &f1, 4, 10000ull, 0), "populate f1");
+    f0.activation_offset_blocks = 0;
+    f1.activation_offset_blocks = 4320;
+    ASSERT(ctv_factory_build(ctx, &f0, 100u), "build f0");
+    ASSERT(ctv_factory_build(ctx, &f1, 100u), "build f1");
+    for (uint32_t i = 0; i < f0.n_users; i++) {
+        unsigned char a[32], b[32];
+        ASSERT(secp256k1_xonly_pubkey_serialize(ctx, a, &f0.user_keyagg[i].agg_pubkey),
+               "serialize f0 keyagg");
+        ASSERT(secp256k1_xonly_pubkey_serialize(ctx, b, &f1.user_keyagg[i].agg_pubkey),
+               "serialize f1 keyagg");
+        ASSERT(memcmp(a, b, 32) == 0,
+               "user_keyagg must be unaffected by activation_offset_blocks");
+    }
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
 /* The user's leaf SPK must equal P2TR over user_keyagg[i].agg_pubkey
  * (sanity-check the relationship between the stored keyagg and the SPK). */
 int test_ctv_factory_leaf_spk_matches_user_keyagg(void) {

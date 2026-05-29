@@ -1320,6 +1320,9 @@ extern int test_ctv_factory_build_null_rejected(void);
 extern int test_ctv_factory_leaf_spk_depends_on_lsp_pubkey(void);
 extern int test_ctv_factory_user_keyagg_deterministic(void);
 extern int test_ctv_factory_leaf_spk_matches_user_keyagg(void);
+extern int test_ctv_factory_leaf_timeout_zero_offset_is_backward_compatible(void);
+extern int test_ctv_factory_leaf_timeout_changes_leaf_spk(void);
+extern int test_ctv_factory_leaf_timeout_keyagg_unchanged(void);
 
 /* superscalar-ctv: funding-output witness + broadcastable dist TX (Phase D-lite) */
 extern int test_funding_witness_no_sweep_layout(void);
@@ -3233,6 +3236,9 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_factory_leaf_spk_depends_on_lsp_pubkey);
     RUN_TEST(test_ctv_factory_user_keyagg_deterministic);
     RUN_TEST(test_ctv_factory_leaf_spk_matches_user_keyagg);
+    RUN_TEST(test_ctv_factory_leaf_timeout_zero_offset_is_backward_compatible);
+    RUN_TEST(test_ctv_factory_leaf_timeout_changes_leaf_spk);
+    RUN_TEST(test_ctv_factory_leaf_timeout_keyagg_unchanged);
 
     printf("\n=== CTV factory funding witness + segwit dist TX (Phase D-lite) ===\n");
     RUN_TEST(test_funding_witness_no_sweep_layout);
