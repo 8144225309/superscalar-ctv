@@ -53,16 +53,117 @@ static int hex_decode(const char *s, unsigned char *out, size_t out_len) {
 static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s --users N --slot-deposit S [options]\n"
-        "  --users N                number of user slots (1..%u)\n"
+        "\n"
+        "Single-layer mode (default, N <= %u):\n"
+        "  --users N                number of user slots\n"
         "  --slot-deposit S         per-user deposit in sats\n"
         "  --funding-height H       block height funding TX confirms at (default 0)\n"
         "  --recovery-blocks R      LSP-sweep offset; 0 = no sweep leaf (default 0)\n"
         "  --lsp-seed-hex H         32-byte LSP secret-key seed (default: all 0xA1)\n"
-        "  --user-seed-base B       single byte; user_i secret = B+i (default: 0xB1)\n"
+        "  --user-seed-base B       single byte; user_i seed = sha256(B||LE32(i)) (default: 0xB1)\n"
         "  --funding-txid T         32-byte funding outpoint (hex, LE wire order)\n"
         "  --funding-vout V         funding outpoint index\n"
-        "    If both txid and vout are set, also emits dist_tx_segwit_hex.\n",
-        prog, (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
+        "    If both txid and vout are set, also emits dist_tx_segwit_hex.\n"
+        "\n"
+        "Hierarchical mode (when --depth and --fanout supplied):\n"
+        "  --depth D                tree depth (1..%u)\n"
+        "  --fanout K               tree fanout (2..%u)\n"
+        "  --users N                MUST equal fanout^depth (e.g. 1024 = 4^5)\n"
+        "    Hierarchical mode emits funding_spk_hex + root_th_hex.\n"
+        "    Sparse-exit dist TX serialization is NOT yet implemented;\n"
+        "    --funding-txid/--funding-vout are ignored in hierarchical mode.\n",
+        prog,
+        (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER,
+        (unsigned int)CTV_HIER_FACTORY_MAX_DEPTH,
+        (unsigned int)CTV_HIER_FACTORY_MAX_FANOUT);
+}
+
+/* Derive user_i's secret key as sha256(seed_base || LE32(i)).
+ * Always yields a valid private key (out-of-range sha256 is a 2^-128 event). */
+static void derive_user_seed(unsigned char seed_base, uint32_t i, unsigned char sk_out[32]) {
+    unsigned char seed_input[5];
+    seed_input[0] = seed_base;
+    seed_input[1] = (unsigned char)(i & 0xFFu);
+    seed_input[2] = (unsigned char)((i >> 8) & 0xFFu);
+    seed_input[3] = (unsigned char)((i >> 16) & 0xFFu);
+    seed_input[4] = (unsigned char)((i >> 24) & 0xFFu);
+    sha256(seed_input, sizeof(seed_input), sk_out);
+}
+
+/* Hierarchical-mode build: allocates pubkey array on the heap (could be
+ * 65k entries), runs ctv_hier_factory_build, prints the funding artefacts.
+ * Returns 0 on success. */
+static int run_hierarchical(
+    secp256k1_context *ctx,
+    uint8_t depth, uint8_t fanout, uint32_t n_users,
+    uint64_t slot_deposit, uint32_t funding_height,
+    uint32_t recovery_blocks,
+    const unsigned char lsp_seed[32], unsigned char user_seed_base)
+{
+    /* Validate K^d == n_users. */
+    uint64_t expected_n = 1;
+    for (uint8_t i = 0; i < depth; i++) expected_n *= (uint64_t)fanout;
+    if ((uint64_t)n_users != expected_n) {
+        fprintf(stderr,
+                "--users (%u) must equal fanout^depth (%u^%u = %llu)\n",
+                n_users, fanout, depth, (unsigned long long)expected_n);
+        return 2;
+    }
+
+    secp256k1_pubkey *user_pks = (secp256k1_pubkey *)malloc(
+        (size_t)n_users * sizeof(secp256k1_pubkey));
+    if (!user_pks) { fprintf(stderr, "malloc failed for %u users\n", n_users); return 1; }
+
+    ctv_hier_factory_t f;
+    memset(&f, 0, sizeof(f));
+    f.depth = depth;
+    f.fanout = fanout;
+    f.n_users = n_users;
+    f.slot_deposit_sats = slot_deposit;
+    f.recovery_offset_blocks = recovery_blocks;
+    f.user_pubkeys = user_pks;
+
+    if (!secp256k1_ec_pubkey_create(ctx, &f.lsp_pubkey, lsp_seed)) {
+        fprintf(stderr, "LSP seed -> pubkey failed\n");
+        free(user_pks);
+        return 1;
+    }
+    for (uint32_t i = 0; i < n_users; i++) {
+        unsigned char sk[32];
+        derive_user_seed(user_seed_base, i, sk);
+        if (!secp256k1_ec_pubkey_create(ctx, &user_pks[i], sk)) {
+            fprintf(stderr, "user[%u] sha256 seed -> pubkey failed\n", i);
+            free(user_pks);
+            return 1;
+        }
+    }
+
+    if (!ctv_hier_factory_build(ctx, &f, funding_height)) {
+        fprintf(stderr, "ctv_hier_factory_build failed\n");
+        free(user_pks);
+        return 1;
+    }
+
+    printf("mode=hierarchical\n");
+    printf("depth=%u\n", f.depth);
+    printf("fanout=%u\n", f.fanout);
+    printf("n_users=%u\n", f.n_users);
+    printf("n_internal_nodes=%u\n", f.n_internal_nodes);
+    printf("slot_deposit_sats=%llu\n", (unsigned long long)f.slot_deposit_sats);
+    printf("total_funding_sats=%llu\n", (unsigned long long)f.total_funding_sats);
+    printf("recovery_cltv_absolute=%u\n", f.recovery_cltv_absolute);
+    printf("anchor_sats=%u\n", (unsigned int)CTV_FACTORY_ANCHOR_SATS);
+
+    printf("funding_spk_hex=");
+    hex_print(f.funding_spk, sizeof(f.funding_spk));
+    printf("\n");
+
+    printf("root_th_hex=");
+    hex_print(f.root_th, sizeof(f.root_th));
+    printf("\n");
+
+    free(user_pks);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -76,6 +177,10 @@ int main(int argc, char **argv) {
     int have_funding_outpoint = 0;
     unsigned char funding_txid[32] = {0};
     uint32_t funding_vout = 0;
+    int have_depth = 0;
+    int have_fanout = 0;
+    uint8_t depth = 0;
+    uint8_t fanout = 0;
 
     /* --- parse argv --- */
     for (int i = 1; i < argc; i++) {
@@ -85,6 +190,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(k, "--slot-deposit") && v) { slot_deposit = (uint64_t)strtoull(v, NULL, 10); i++; }
         else if (!strcmp(k, "--funding-height") && v) { funding_height = (uint32_t)strtoul(v, NULL, 10); i++; }
         else if (!strcmp(k, "--recovery-blocks") && v) { recovery_blocks = (uint32_t)strtoul(v, NULL, 10); i++; }
+        else if (!strcmp(k, "--depth") && v) { depth = (uint8_t)strtoul(v, NULL, 10); have_depth = 1; i++; }
+        else if (!strcmp(k, "--fanout") && v) { fanout = (uint8_t)strtoul(v, NULL, 10); have_fanout = 1; i++; }
         else if (!strcmp(k, "--lsp-seed-hex") && v) {
             if (!hex_decode(v, lsp_seed, 32)) { fprintf(stderr, "bad --lsp-seed-hex\n"); return 2; }
             i++;
@@ -100,12 +207,47 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "unknown arg: %s\n", k); usage(argv[0]); return 2; }
     }
 
-    if (n_users == 0u || n_users > CTV_FACTORY_MAX_USERS_SINGLE_LAYER) {
-        fprintf(stderr, "--users must be 1..%u\n", (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
-        return 2;
-    }
     if (slot_deposit == 0u) {
         fprintf(stderr, "--slot-deposit must be > 0\n");
+        return 2;
+    }
+
+    /* --- hierarchical mode if both --depth and --fanout are supplied --- */
+    if (have_depth && have_fanout) {
+        if (depth == 0u || depth > CTV_HIER_FACTORY_MAX_DEPTH) {
+            fprintf(stderr, "--depth must be 1..%u\n", (unsigned int)CTV_HIER_FACTORY_MAX_DEPTH);
+            return 2;
+        }
+        if (fanout < 2u || fanout > CTV_HIER_FACTORY_MAX_FANOUT) {
+            fprintf(stderr, "--fanout must be 2..%u\n", (unsigned int)CTV_HIER_FACTORY_MAX_FANOUT);
+            return 2;
+        }
+        if (n_users == 0u) {
+            fprintf(stderr, "--users must be set in hierarchical mode (= fanout^depth)\n");
+            return 2;
+        }
+        if (have_funding_outpoint != 0) {
+            fprintf(stderr,
+                    "warn: --funding-txid/--funding-vout ignored in hierarchical mode; "
+                    "per-layer dist TX serialization is a follow-up\n");
+        }
+        secp256k1_context *ctx = secp256k1_context_create(
+            SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+        if (!ctx) { fprintf(stderr, "secp256k1_context_create failed\n"); return 1; }
+        int rc = run_hierarchical(ctx, depth, fanout, n_users,
+                                   slot_deposit, funding_height, recovery_blocks,
+                                   lsp_seed, user_seed_base);
+        secp256k1_context_destroy(ctx);
+        return rc;
+    } else if (have_depth || have_fanout) {
+        fprintf(stderr, "single-layer requires neither, hierarchical requires both, of --depth and --fanout\n");
+        return 2;
+    }
+
+    /* --- single-layer mode --- */
+    if (n_users == 0u || n_users > CTV_FACTORY_MAX_USERS_SINGLE_LAYER) {
+        fprintf(stderr, "--users must be 1..%u in single-layer mode\n",
+                (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
         return 2;
     }
 
@@ -125,19 +267,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     /* sha256(seed_base || LE32(i)) so every i yields a valid private key.
-     * The byte-repeated approach hit 0x00 and 0xFF (both invalid as 256-bit
-     * scalars: 0x00...0 is the zero key, 0xFF...F exceeds the curve order),
-     * so user counts that walked past those values would crash mid-build
-     * (e.g. N=200 with default seed_base=0xB1 hits 0xFF at i=78). */
+     * See derive_user_seed() for rationale (avoids 0x00 and 0xFF scalars). */
     for (uint32_t i = 0; i < n_users; i++) {
-        unsigned char seed_input[5];
-        seed_input[0] = user_seed_base;
-        seed_input[1] = (unsigned char)(i & 0xFFu);
-        seed_input[2] = (unsigned char)((i >> 8) & 0xFFu);
-        seed_input[3] = (unsigned char)((i >> 16) & 0xFFu);
-        seed_input[4] = (unsigned char)((i >> 24) & 0xFFu);
         unsigned char sk[32];
-        sha256(seed_input, sizeof(seed_input), sk);
+        derive_user_seed(user_seed_base, i, sk);
         if (!secp256k1_ec_pubkey_create(ctx, &f.user_pubkeys[i], sk)) {
             fprintf(stderr, "user[%u] sha256 seed -> pubkey failed\n", i);
             return 1;
@@ -150,6 +283,7 @@ int main(int argc, char **argv) {
     }
 
     /* --- emit factory artefacts --- */
+    printf("mode=single\n");
     printf("n_users=%u\n", f.n_users);
     printf("slot_deposit_sats=%llu\n", (unsigned long long)f.slot_deposit_sats);
     printf("total_funding_sats=%llu\n", (unsigned long long)f.total_funding_sats);
