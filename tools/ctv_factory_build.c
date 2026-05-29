@@ -61,7 +61,7 @@ static void usage(const char *prog) {
         "  --funding-txid T         32-byte funding outpoint (hex, LE wire order)\n"
         "  --funding-vout V         funding outpoint index\n"
         "    If both txid and vout are set, also emits dist_tx_segwit_hex.\n",
-        prog, CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
+        prog, (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
 }
 
 int main(int argc, char **argv) {
@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
     }
 
     if (n_users == 0u || n_users > CTV_FACTORY_MAX_USERS_SINGLE_LAYER) {
-        fprintf(stderr, "--users must be 1..%u\n", CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
+        fprintf(stderr, "--users must be 1..%u\n", (unsigned int)CTV_FACTORY_MAX_USERS_SINGLE_LAYER);
         return 2;
     }
     if (slot_deposit == 0u) {

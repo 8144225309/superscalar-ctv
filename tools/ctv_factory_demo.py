@@ -210,17 +210,21 @@ def main():
                     help="path to compiled ctv_factory_build binary")
     ap.add_argument("--bitcoin-cli", default="bitcoin-cli",
                     help="bitcoin-cli command, e.g. 'bitcoin-cli -signet ...'")
-    ap.add_argument("--lsp-change-address", required=True,
-                    help="LSP-owned address to receive CPFP child's change")
-    ap.add_argument("--package-fee-sats", type=int, default=2000)
+    # Used only for the (currently disabled) CPFP-child path; harmless to
+    # accept and ignore in the overfund-based v0 flow.
+    ap.add_argument("--lsp-change-address", default=None,
+                    help="LSP address (used by the CPFP path, disabled in v0)")
+    ap.add_argument("--dist-tx-fee-sats", type=int, default=4000,
+                    help="overfunding margin → dist TX implicit fee "
+                         "(must clear the node's min relay fee, typically >=512)")
     ap.add_argument("--no-broadcast", action="store_true",
-                    help="build everything but skip sendtoaddress/submitpackage")
+                    help="build everything but skip sendtoaddress/sendrawtransaction")
     args = ap.parse_args()
 
     cli_args = args.bitcoin_cli.split()
 
     # --- 1. Build factory in-memory --------------------------------------
-    print(f"[1/8] building factory: users={args.users} "
+    print(f"[1/7] building factory: users={args.users} "
           f"deposit={args.slot_deposit_sats}sat")
     build_args = [
         "--users", str(args.users),
@@ -238,7 +242,7 @@ def main():
     print(f"      total_funding     = {total_funding} sat")
 
     # --- 2. Derive bech32m address ----------------------------------------
-    print(f"[2/8] decoding funding address ...")
+    print(f"[2/7] decoding funding address ...")
     funding_address = decode_spk_to_address(cli_args, funding_spk)
     print(f"      funding_address   = {funding_address}")
 
@@ -246,21 +250,30 @@ def main():
         print("--no-broadcast set; stopping after address derivation")
         return
 
-    # --- 3. Fund the factory ----------------------------------------------
-    print(f"[3/8] sending {total_funding} sat → {funding_address}")
-    btc = f"{total_funding / 1e8:.8f}"
+    # --- 3. Fund the factory (OVERFUND by dist_tx_fee_sats) ---------------
+    # The CTV template hash commits to the dist TX's OUTPUTS, not its input
+    # amount.  If the LSP funds the factory with more sats than the dist TX
+    # pays out, the difference becomes the dist TX's implicit fee — letting
+    # us sendrawtransaction it directly without any CPFP/submitpackage
+    # machinery.  See docs/CTV_FACTORY_DEMO.md for the V3/TRUC-CPFP variant
+    # we'd need for fee-flexibility in production.
+    fund_amount = total_funding + args.dist_tx_fee_sats
+    print(f"[3/7] sending {fund_amount} sat → {funding_address} "
+          f"(overfunding {total_funding} by {args.dist_tx_fee_sats} → "
+          f"dist TX implicit fee)")
+    btc = f"{fund_amount / 1e8:.8f}"
     funding_txid = cli(cli_args, "sendtoaddress", funding_address, btc)
     print(f"      funding_txid      = {funding_txid}")
 
     # --- 4. Wait for confirmation, find vout ------------------------------
-    print(f"[4/8] waiting for funding TX to confirm "
+    print(f"[4/7] waiting for funding TX to confirm "
           f"(~30s on Mutinynet, ~10min on signet)...")
     tx = wait_for_tx_in_block(cli_args, funding_txid)
     funding_vout = find_vout_for_spk(tx, funding_spk)
     print(f"      funding_vout      = {funding_vout}")
 
     # --- 5. Build segwit dist TX with witness -----------------------------
-    print(f"[5/8] building segwit dist TX with CTV-path witness ...")
+    print(f"[5/7] building segwit dist TX with CTV-path witness ...")
     # ctv_factory_build's --funding-txid is wire-format (little-endian);
     # bitcoin-cli gives us RPC-format (big-endian display).  Convert.
     funding_txid_wire = txid_rpc_to_wire(funding_txid)
@@ -274,26 +287,17 @@ def main():
     dist_txid = decoded["txid"]
     print(f"      dist_txid         = {dist_txid}")
 
-    # --- 6. Build CPFP child ----------------------------------------------
-    print(f"[6/8] building CPFP child (anchor + wallet fee → change) ...")
-    cpfp_hex = build_cpfp_child(cli_args, dist_txid, anchor_vout,
-                                 anchor_sats, args.lsp_change_address,
-                                 args.package_fee_sats)
-    print(f"      cpfp_child_bytes  = {len(cpfp_hex) // 2}")
-
-    # --- 7. submitpackage [dist_tx, cpfp_child] ---------------------------
-    print(f"[7/8] submitpackage [dist_tx, cpfp_child] ...")
+    # --- 6. sendrawtransaction (no CPFP needed — dist TX pays its own fee) -
+    print(f"[6/7] sendrawtransaction dist_tx ...")
     try:
-        result = cli(cli_args, "submitpackage", [dist_tx_hex, cpfp_hex])
-        print(f"      result            = {json.dumps(result, indent=2)}")
+        broadcast_txid = cli(cli_args, "sendrawtransaction", dist_tx_hex)
+        print(f"      broadcast_txid    = {broadcast_txid}")
     except RuntimeError as e:
-        sys.stderr.write(f"submitpackage failed: {e}\n")
-        sys.stderr.write("If this is a policy rejection on V2 parent + ephemeral\n"
-                         "anchor, the C library may need a V3/TRUC mode added.\n")
+        sys.stderr.write(f"sendrawtransaction failed: {e}\n")
         sys.exit(1)
 
-    # --- 8. Wait for dist TX to confirm -----------------------------------
-    print(f"[8/8] waiting for dist TX to confirm ...")
+    # --- 7. Wait for dist TX to confirm -----------------------------------
+    print(f"[7/7] waiting for dist TX to confirm ...")
     wait_for_tx_in_block(cli_args, dist_txid)
     print(f"DONE — {args.users} user UTXOs materialized.")
     print(f"      dist_txid         = {dist_txid}")
