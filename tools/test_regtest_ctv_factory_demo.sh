@@ -136,7 +136,7 @@ python3 "$DEMO" \
     --build-tool "$TOOL" \
     --bitcoin-cli "$INQ_BIN/bitcoin-cli -regtest -datadir=$DATADIR -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$RPCPORT -rpcwallet=$WALLET" \
     --lsp-change-address "$LSP_CHANGE_ADDR" \
-    --dist-tx-fee-sats 4000 \
+    --dist-tx-fee-sats 15000 \
     2>&1 | tee "$DEMO_OUT"
 DEMO_RC=${PIPESTATUS[0]}
 set -e
