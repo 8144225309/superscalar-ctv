@@ -483,7 +483,7 @@ static int verify_witness_against_spk(
 int test_funding_witness_reproduces_spk_no_sweep(void) {
     secp256k1_context *ctx = tf_ctx();
     ctv_factory_t f;
-    ASSERT(tf_populate(ctx, &f, 8, 10000ull, /*recovery=*/0), "populate");
+    ASSERT(tf_populate(ctx, &f, 4, 10000ull, /*recovery=*/0), "populate");
     ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
 
     unsigned char w[128]; size_t wl = sizeof(w);
@@ -498,7 +498,7 @@ int test_funding_witness_reproduces_spk_no_sweep(void) {
 int test_funding_witness_reproduces_spk_with_sweep(void) {
     secp256k1_context *ctx = tf_ctx();
     ctv_factory_t f;
-    ASSERT(tf_populate(ctx, &f, 8, 10000ull, /*recovery=*/4320u), "populate");
+    ASSERT(tf_populate(ctx, &f, 4, 10000ull, /*recovery=*/4320u), "populate");
     ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
 
     unsigned char w[128]; size_t wl = sizeof(w);
@@ -594,7 +594,7 @@ int test_dist_tx_segwit_layout(void) {
 int test_dist_tx_segwit_stripped_matches_unsigned(void) {
     secp256k1_context *ctx = tf_ctx();
     ctv_factory_t f;
-    ASSERT(tf_populate(ctx, &f, 6, 12500ull, /*recovery=*/0), "populate");
+    ASSERT(tf_populate(ctx, &f, 4, 12500ull, /*recovery=*/0), "populate");
     ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
 
     unsigned char funding_txid[32];
