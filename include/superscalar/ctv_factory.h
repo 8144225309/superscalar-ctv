@@ -346,4 +346,35 @@ int ctv_hier_factory_build_funding_witness(
     unsigned char            *witness_out,
     size_t                   *witness_len_inout);
 
+/*
+ * Compute the deferred leaf outpoint for user_index in a hierarchical
+ * CTV factory.
+ *
+ * This is the foundation of Phase C.2 channel commit pre-signing: each
+ * user's "leaf" UTXO doesn't physically exist pre-dissolution, but its
+ * outpoint is deterministic because every intermediate dist TX is
+ * CTV-committed (its bytes are fully determined at funding time).
+ *
+ * Walks from the root dist TX (input = funding outpoint) down to
+ * user_index's leaf-layer dist TX, computing each layer's TXID via
+ * sha256d of the legacy (non-segwit) serialization.  The leaf vout is
+ * user_index modulo fanout (the user's position within their leaf-layer
+ * parent's K children).
+ *
+ * On a depth-d tree this walks d layers.  Memory peak is bounded by one
+ * layer's per-output buffer (~K * 43 + 13 bytes).  CPU cost is
+ * O(d * K * subtree_users) for the SPK derivations along the path —
+ * about 30-60s at d=8 K=4 (65k users).
+ *
+ * Returns 1 on success.  user_index >= factory->n_users returns 0.
+ */
+int ctv_hier_factory_compute_leaf_outpoint(
+    const secp256k1_context  *ctx,
+    const ctv_hier_factory_t *factory,
+    uint32_t                  user_index,
+    const unsigned char       funding_txid[32],
+    uint32_t                  funding_vout,
+    unsigned char             out_leaf_txid[32],
+    uint32_t                 *out_leaf_vout);
+
 #endif /* SUPERSCALAR_CTV_FACTORY_H */

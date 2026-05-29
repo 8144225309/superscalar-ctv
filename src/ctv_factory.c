@@ -734,3 +734,175 @@ int ctv_hier_factory_build_funding_witness(
     return build_ctv_path_witness(ctx, &f->root_keyagg, f->root_th,
                                    sweep_ptr, witness_out, witness_len_inout);
 }
+
+/* ====================================================================
+ *  Phase C.2 — leaf outpoint resolver (PR-C2a)
+ * ==================================================================== */
+
+/* Compute sha256d of the legacy (non-segwit) serialization of one
+ * layer's dist TX.  The TX has 1 input (parent_txid, parent_vout) and
+ * (fanout + 1) outputs whose CTxOut concatenation is in outputs_concat. */
+static int compute_layer_txid(
+    const unsigned char  parent_txid[32],
+    uint32_t             parent_vout,
+    uint8_t              fanout,
+    const unsigned char *outputs_concat,
+    size_t               outputs_len,
+    unsigned char        out_txid[32])
+{
+    uint32_t n_outputs = (uint32_t)fanout + 1u;
+    size_t out_count_varint_len = (n_outputs <= 0xfcu) ? 1u : 3u;
+
+    size_t total = 4u + 1u + 36u + 1u + 4u
+                 + out_count_varint_len
+                 + outputs_len + 4u;
+
+    unsigned char *buf = (unsigned char *)malloc(total);
+    if (!buf) return 0;
+
+    size_t pos = 0;
+    w_u32_le(buf + pos, 2u); pos += 4;                       /* nVersion = 2 */
+    buf[pos++] = 0x01;                                        /* input_count = 1 */
+    memcpy(buf + pos, parent_txid, 32); pos += 32;            /* prevout txid */
+    w_u32_le(buf + pos, parent_vout); pos += 4;               /* prevout vout */
+    buf[pos++] = 0x00;                                        /* scriptSig_len */
+    w_u32_le(buf + pos, 0xFFFFFFFEu); pos += 4;               /* nSequence */
+
+    if (out_count_varint_len == 1u) {
+        buf[pos++] = (unsigned char)n_outputs;
+    } else {
+        buf[pos++] = 0xfd;
+        buf[pos++] = (unsigned char)(n_outputs & 0xff);
+        buf[pos++] = (unsigned char)((n_outputs >> 8) & 0xff);
+    }
+
+    memcpy(buf + pos, outputs_concat, outputs_len); pos += outputs_len;
+    w_u32_le(buf + pos, 0u); pos += 4;                        /* nLockTime = 0 */
+
+    unsigned char first[32];
+    sha256(buf, pos, first);
+    sha256(first, 32, out_txid);
+    free(buf);
+    return 1;
+}
+
+/* Thin wrapper around hier_build_subtree that drops the per-subtree TH
+ * and keyagg outputs — we only need the SPK and amount for siblings of
+ * the path we're walking. */
+static int hier_compute_subtree_spk(
+    const secp256k1_context *ctx,
+    const secp256k1_pubkey  *lsp_pk,
+    const secp256k1_pubkey  *users_slice,
+    uint32_t                 n_users_in_subtree,
+    uint8_t                  fanout,
+    uint8_t                  depth_remaining,
+    uint64_t                 slot_deposit,
+    uint32_t                 activation_cltv,
+    unsigned char            out_spk[34],
+    uint64_t                *out_amount)
+{
+    unsigned char  th[32];
+    musig_keyagg_t keyagg;
+    return hier_build_subtree(ctx, lsp_pk, users_slice, n_users_in_subtree,
+                               fanout, depth_remaining, slot_deposit,
+                               activation_cltv,
+                               th, &keyagg, out_spk, out_amount);
+}
+
+int ctv_hier_factory_compute_leaf_outpoint(
+    const secp256k1_context  *ctx,
+    const ctv_hier_factory_t *f,
+    uint32_t                  user_index,
+    const unsigned char       funding_txid[32],
+    uint32_t                  funding_vout,
+    unsigned char             out_leaf_txid[32],
+    uint32_t                 *out_leaf_vout)
+{
+    if (!ctx || !f || !funding_txid || !out_leaf_txid || !out_leaf_vout) return 0;
+    if (user_index >= f->n_users) return 0;
+
+    /* Decompose user_index into a base-K path of length depth-1
+     * (the depth-1 entry is the leaf vout within the leaf-layer subtree). */
+    uint32_t path[CTV_HIER_FACTORY_MAX_DEPTH];
+    uint32_t idx = user_index;
+    uint32_t users_per_subtree = f->n_users;
+    for (uint8_t i = 0; (uint8_t)(i + 1u) < f->depth; i++) {
+        users_per_subtree /= (uint32_t)f->fanout;
+        path[i] = idx / users_per_subtree;
+        idx %= users_per_subtree;
+    }
+    /* Leaf vout: user's position within the leaf-layer parent's K children. */
+    *out_leaf_vout = user_index % (uint32_t)f->fanout;
+
+    /* Walk from root downward.  At each layer compute the K children's
+     * SPKs/amounts, serialize this layer's dist TX legacy form, hash it
+     * to get the layer's TXID, then descend into path[layer]'s child. */
+    unsigned char           current_txid[32];
+    uint32_t                current_vout;
+    const secp256k1_pubkey *subtree_users = f->user_pubkeys;
+    uint32_t                subtree_n = f->n_users;
+    uint8_t                 depth_remaining = (uint8_t)(f->depth - 1u);
+
+    memcpy(current_txid, funding_txid, 32);
+    current_vout = funding_vout;
+
+    for (uint8_t layer = 0; layer < f->depth; layer++) {
+        unsigned char outputs_buf[CTV_HIER_FACTORY_MAX_FANOUT * 43u + 13u];
+        size_t outputs_pos = 0;
+        uint32_t users_per_child = subtree_n / (uint32_t)f->fanout;
+
+        for (uint8_t i = 0; i < f->fanout; i++) {
+            unsigned char child_spk[34];
+            uint64_t      child_amount;
+
+            if (depth_remaining == 0u) {
+                /* Leaf layer: each child is a user's 2-of-2 P2TR leaf. */
+                musig_keyagg_t leaf_keyagg;
+                if (!build_user_leaf_spk_2of2(ctx, &f->lsp_pubkey,
+                                               &subtree_users[i],
+                                               f->activation_cltv_absolute,
+                                               &leaf_keyagg, child_spk))
+                    return 0;
+                child_amount = f->slot_deposit_sats;
+            } else {
+                /* Internal layer: child SPK from recursive subtree compute. */
+                if (!hier_compute_subtree_spk(
+                        ctx, &f->lsp_pubkey,
+                        subtree_users + (size_t)i * users_per_child,
+                        users_per_child, f->fanout,
+                        (uint8_t)(depth_remaining - 1u),
+                        f->slot_deposit_sats,
+                        f->activation_cltv_absolute,
+                        child_spk, &child_amount))
+                    return 0;
+            }
+
+            outputs_pos += serialize_output(outputs_buf + outputs_pos,
+                                            child_amount, child_spk, 34);
+        }
+
+        /* P2A anchor (matches the layout used by hier_build_subtree). */
+        outputs_pos += serialize_output(outputs_buf + outputs_pos,
+                                        (uint64_t)CTV_FACTORY_ANCHOR_SATS,
+                                        CTV_FACTORY_ANCHOR_SPK,
+                                        CTV_FACTORY_ANCHOR_SPK_LEN);
+
+        /* Compute this layer's TXID from the legacy serialization. */
+        unsigned char layer_txid[32];
+        if (!compute_layer_txid(current_txid, current_vout, f->fanout,
+                                 outputs_buf, outputs_pos, layer_txid))
+            return 0;
+
+        memcpy(current_txid, layer_txid, 32);
+
+        if (layer + 1u < f->depth) {
+            current_vout = path[layer];
+            subtree_users = subtree_users + (size_t)path[layer] * users_per_child;
+            subtree_n = users_per_child;
+            depth_remaining = (uint8_t)(depth_remaining - 1u);
+        }
+    }
+
+    memcpy(out_leaf_txid, current_txid, 32);
+    return 1;
+}

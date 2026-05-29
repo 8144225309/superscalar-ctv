@@ -1342,6 +1342,10 @@ extern int test_ctv_hier_user_change_changes_root_th(void);
 extern int test_ctv_hier_sweep_changes_funding_spk_only(void);
 extern int test_ctv_hier_invalid_topology_rejected(void);
 extern int test_ctv_hier_null_rejected(void);
+extern int test_ctv_hier_leaf_outpoint_out_of_bounds(void);
+extern int test_ctv_hier_leaf_outpoint_vout_is_mod_K(void);
+extern int test_ctv_hier_leaf_outpoint_subtree_grouping(void);
+extern int test_ctv_hier_leaf_outpoint_depends_on_funding(void);
 
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
@@ -3258,6 +3262,10 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_hier_sweep_changes_funding_spk_only);
     RUN_TEST(test_ctv_hier_invalid_topology_rejected);
     RUN_TEST(test_ctv_hier_null_rejected);
+    RUN_TEST(test_ctv_hier_leaf_outpoint_out_of_bounds);
+    RUN_TEST(test_ctv_hier_leaf_outpoint_vout_is_mod_K);
+    RUN_TEST(test_ctv_hier_leaf_outpoint_subtree_grouping);
+    RUN_TEST(test_ctv_hier_leaf_outpoint_depends_on_funding);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);
