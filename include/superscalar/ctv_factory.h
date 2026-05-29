@@ -173,6 +173,59 @@ int ctv_factory_verify_dist_tx_th(
     const ctv_factory_t *factory,
     unsigned char        out_th[32]);
 
+/*
+ * Build the script-path witness that spends the funding output via the
+ * CTV escape leaf.
+ *
+ * Witness stack (BIP-341 script path):
+ *   item 0: the CTV leaf script  — 34 bytes: <root_TH> OP_CHECKTEMPLATEVERIFY
+ *   item 1: the control block    — 33 bytes (CTV-only taptree)
+ *                                  or 65 bytes (CTV + LSP-sweep taptree)
+ *
+ * Output is in Bitcoin wire format with the leading stack-count varint:
+ *   varint(2) || varint(34) || script(34)
+ *               || varint(33|65) || control_block(33|65)
+ *
+ * Total size: 70 bytes (recovery_offset_blocks == 0)
+ *          or 102 bytes (recovery_offset_blocks > 0; sweep sibling included).
+ *
+ * On entry, *witness_len_inout is the buffer size; on success it is set to
+ * the number of bytes written.  On too-small-buffer the required size is
+ * written and 0 is returned.
+ *
+ * Returns 1 on success.
+ */
+int ctv_factory_build_funding_witness(
+    const secp256k1_context *ctx,
+    const ctv_factory_t     *factory,
+    unsigned char           *witness_out,
+    size_t                  *witness_len_inout);
+
+/*
+ * Build the broadcastable, segwit-formatted dist TX that spends the
+ * funding output via the CTV escape path.  Layout:
+ *
+ *   nVersion(4) || 0x00 || 0x01                  (segwit marker + flag)
+ *     || input_count_varint || input
+ *     || output_count_varint || outputs
+ *     || witness_for_input_0                     (built via _funding_witness)
+ *     || nLockTime(4)
+ *
+ * The result is ready for `bitcoin-cli sendrawtransaction` and can be the
+ * parent in a `submitpackage [parent_hex, cpfp_child_hex]` call where the
+ * child spends the P2A anchor at output index `factory->n_users`.
+ *
+ * Returns 1 on success; sets *tx_len_inout to the required size on
+ * too-small-buffer.
+ */
+int ctv_factory_build_dist_tx_segwit(
+    const secp256k1_context *ctx,
+    const ctv_factory_t     *factory,
+    const unsigned char      funding_txid[32],
+    uint32_t                 funding_vout,
+    unsigned char           *tx_out,
+    size_t                  *tx_len_inout);
+
 
 /* ====================================================================
  *  Hierarchical CTV factory (Phase C.1)
@@ -254,5 +307,20 @@ int ctv_hier_factory_build(
     const secp256k1_context  *ctx,
     ctv_hier_factory_t       *factory,
     uint32_t                  funding_block_height);
+
+/*
+ * Hierarchical-factory analog of ctv_factory_build_funding_witness.
+ *
+ * The funding output is structurally identical (P2TR with CTV leaf, optional
+ * LSP-sweep leaf); only the source struct differs.  Output format and size
+ * are exactly the same as the single-layer variant (70 or 102 bytes).
+ *
+ * Returns 1 on success.
+ */
+int ctv_hier_factory_build_funding_witness(
+    const secp256k1_context  *ctx,
+    const ctv_hier_factory_t *factory,
+    unsigned char            *witness_out,
+    size_t                   *witness_len_inout);
 
 #endif /* SUPERSCALAR_CTV_FACTORY_H */
