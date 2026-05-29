@@ -227,15 +227,11 @@ int test_funding_spk_legacy_matches_inline(void) {
     ASSERT(build_factory_funding_spk(ctx, &ka, NULL, NULL, spk_via_helper),
            "helper legacy mode");
 
-    /* Now reproduce the inline construction byte-for-byte. */
-    secp256k1_xonly_pubkey internal_key;
-    ASSERT(secp256k1_xonly_pubkey_from_pubkey(ctx, &internal_key, NULL,
-                                              &ka.agg_pubkey),
-           "internal key");
-
+    /* Reproduce tools/superscalar_lsp.c:3360-3391 byte-for-byte.
+       ka.agg_pubkey is already x-only, so serialize it directly. */
     unsigned char internal_ser[32];
-    ASSERT(secp256k1_xonly_pubkey_serialize(ctx, internal_ser, &internal_key),
-           "serialize internal");
+    ASSERT(secp256k1_xonly_pubkey_serialize(ctx, internal_ser, &ka.agg_pubkey),
+           "serialize internal x-only");
 
     unsigned char tweak[32];
     sha256_tagged("TapTweak", internal_ser, 32, tweak);
