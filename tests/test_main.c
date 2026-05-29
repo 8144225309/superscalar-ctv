@@ -1321,6 +1321,16 @@ extern int test_ctv_factory_leaf_spk_depends_on_lsp_pubkey(void);
 extern int test_ctv_factory_user_keyagg_deterministic(void);
 extern int test_ctv_factory_leaf_spk_matches_user_keyagg(void);
 
+/* superscalar-ctv: funding-output witness + broadcastable dist TX (Phase D-lite) */
+extern int test_funding_witness_no_sweep_layout(void);
+extern int test_funding_witness_with_sweep_layout(void);
+extern int test_funding_witness_reproduces_spk_no_sweep(void);
+extern int test_funding_witness_reproduces_spk_with_sweep(void);
+extern int test_funding_witness_too_small_buffer(void);
+extern int test_dist_tx_segwit_layout(void);
+extern int test_dist_tx_segwit_stripped_matches_unsigned(void);
+extern int test_hier_funding_witness_round_trips(void);
+
 /* superscalar-ctv: CTV factory builder (Phase C.1, hierarchical) */
 extern int test_ctv_hier_depth2_16users(void);
 extern int test_ctv_hier_depth5_1024users_scaling_unlock(void);
@@ -3223,6 +3233,16 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_factory_leaf_spk_depends_on_lsp_pubkey);
     RUN_TEST(test_ctv_factory_user_keyagg_deterministic);
     RUN_TEST(test_ctv_factory_leaf_spk_matches_user_keyagg);
+
+    printf("\n=== CTV factory funding witness + segwit dist TX (Phase D-lite) ===\n");
+    RUN_TEST(test_funding_witness_no_sweep_layout);
+    RUN_TEST(test_funding_witness_with_sweep_layout);
+    RUN_TEST(test_funding_witness_reproduces_spk_no_sweep);
+    RUN_TEST(test_funding_witness_reproduces_spk_with_sweep);
+    RUN_TEST(test_funding_witness_too_small_buffer);
+    RUN_TEST(test_dist_tx_segwit_layout);
+    RUN_TEST(test_dist_tx_segwit_stripped_matches_unsigned);
+    RUN_TEST(test_hier_funding_witness_round_trips);
 
     printf("\n=== CTV factory builder (Phase C.1, hierarchical) ===\n");
     RUN_TEST(test_ctv_hier_depth2_16users);

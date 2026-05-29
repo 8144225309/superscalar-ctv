@@ -275,6 +275,207 @@ int ctv_factory_build_dist_tx(
 }
 
 /* ====================================================================
+ *  Funding-output script-path witness (Phase D-lite, broadcast path)
+ *
+ *  Shared between single-layer and hierarchical factories.  Both have
+ *  the same funding-output shape: P2TR(keyagg, CTV<th> [+ sweep]).
+ * ==================================================================== */
+
+/* Shared core: takes the keyagg + CTV TH + (optional) sweep leaf and
+ * emits the 2-item witness in wire format. */
+static int build_ctv_path_witness(
+    const secp256k1_context *ctx,
+    const musig_keyagg_t    *keyagg,
+    const unsigned char      ctv_th[32],
+    const tapscript_leaf_t  *sweep_leaf,
+    unsigned char           *witness_out,
+    size_t                  *witness_len_inout)
+{
+    tapscript_leaf_t ctv_leaf;
+    if (!tapscript_build_ctv(&ctv_leaf, ctv_th)) return 0;
+
+    /* Compute merkle root and parity. */
+    unsigned char merkle_root[32];
+    if (sweep_leaf) {
+        tapscript_leaf_t leaves[2];
+        leaves[0] = ctv_leaf;
+        leaves[1] = *sweep_leaf;
+        if (!tapscript_merkle_root(merkle_root, leaves, 2)) return 0;
+    } else {
+        memcpy(merkle_root, ctv_leaf.leaf_hash, 32);
+    }
+
+    secp256k1_xonly_pubkey tweaked;
+    int parity = 0;
+    if (!tapscript_tweak_pubkey(ctx, &tweaked, &parity,
+                                &keyagg->agg_pubkey, merkle_root))
+        return 0;
+
+    /* Build the control block (33 bytes for 1-leaf, 65 for 2-leaf). */
+    unsigned char cb[65];
+    size_t cb_len = sizeof(cb);
+    if (sweep_leaf) {
+        if (!tapscript_build_control_block_2leaf(cb, &cb_len, parity,
+                                                  &keyagg->agg_pubkey,
+                                                  sweep_leaf, ctx))
+            return 0;
+    } else {
+        if (!tapscript_build_control_block(cb, &cb_len, parity,
+                                            &keyagg->agg_pubkey, ctx))
+            return 0;
+    }
+
+    /* Wire format: varint(2) || varint(34) || script(34)
+     *           || varint(cb_len) || control_block(cb_len)
+     *
+     * All length varints are single-byte here (34 < 0xfd, 33/65 < 0xfd). */
+    size_t need = 1u + 1u + 34u + 1u + cb_len;
+    if (*witness_len_inout < need) {
+        *witness_len_inout = need;
+        return 0;
+    }
+
+    size_t pos = 0;
+    witness_out[pos++] = 0x02;                /* stack count = 2 */
+    witness_out[pos++] = 0x22;                /* script len = 34 */
+    memcpy(witness_out + pos, ctv_leaf.script, 34); pos += 34;
+    witness_out[pos++] = (unsigned char)cb_len;
+    memcpy(witness_out + pos, cb, cb_len); pos += cb_len;
+
+    *witness_len_inout = pos;
+    return 1;
+}
+
+/* Helper: build the LSP-sweep tap leaf if the factory has one.  Returns 0
+ * on error, 1 on success; sets *out to NULL or to &leaf_storage. */
+static int build_optional_sweep_leaf(
+    const secp256k1_context  *ctx,
+    const secp256k1_pubkey   *lsp_pk,
+    uint32_t                  recovery_offset_blocks,
+    uint32_t                  recovery_cltv_absolute,
+    tapscript_leaf_t         *leaf_storage,
+    const tapscript_leaf_t  **out)
+{
+    if (recovery_offset_blocks == 0u) {
+        *out = NULL;
+        return 1;
+    }
+    secp256k1_xonly_pubkey lsp_xonly;
+    if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &lsp_xonly, NULL, lsp_pk))
+        return 0;
+    if (!tapscript_build_cltv_timeout(leaf_storage, recovery_cltv_absolute,
+                                      &lsp_xonly, ctx))
+        return 0;
+    *out = leaf_storage;
+    return 1;
+}
+
+int ctv_factory_build_funding_witness(
+    const secp256k1_context *ctx,
+    const ctv_factory_t     *f,
+    unsigned char           *witness_out,
+    size_t                  *witness_len_inout)
+{
+    if (!ctx || !f || !witness_out || !witness_len_inout) return 0;
+
+    tapscript_leaf_t sweep_storage;
+    const tapscript_leaf_t *sweep_ptr = NULL;
+    if (!build_optional_sweep_leaf(ctx, &f->lsp_pubkey,
+                                   f->recovery_offset_blocks,
+                                   f->recovery_cltv_absolute,
+                                   &sweep_storage, &sweep_ptr))
+        return 0;
+
+    return build_ctv_path_witness(ctx, &f->keyagg, f->dist_tx_th,
+                                   sweep_ptr, witness_out, witness_len_inout);
+}
+
+int ctv_factory_build_dist_tx_segwit(
+    const secp256k1_context *ctx,
+    const ctv_factory_t     *f,
+    const unsigned char      funding_txid[32],
+    uint32_t                 funding_vout,
+    unsigned char           *tx_out,
+    size_t                  *tx_len_inout)
+{
+    if (!ctx || !f || !funding_txid || !tx_out || !tx_len_inout) return 0;
+
+    /* Build the witness up front so we know its size. */
+    unsigned char witness_buf[128];  /* max 102 actually */
+    size_t witness_len = sizeof(witness_buf);
+    if (!ctv_factory_build_funding_witness(ctx, f, witness_buf, &witness_len))
+        return 0;
+
+    size_t n_outputs = (size_t)f->n_users + 1u;
+    size_t out_count_varint_len = (n_outputs <= 0xfcu) ? 1u : 3u;
+    size_t outputs_bytes = (size_t)f->n_users * 43u + 13u;
+
+    size_t need = 4u                       /* nVersion */
+                + 2u                       /* marker + flag */
+                + 1u                       /* input count = 1 */
+                + 36u + 1u + 4u            /* one input */
+                + out_count_varint_len
+                + outputs_bytes
+                + witness_len              /* witness for input 0 */
+                + 4u;                      /* nLockTime */
+
+    if (*tx_len_inout < need) {
+        *tx_len_inout = need;
+        return 0;
+    }
+
+    size_t pos = 0;
+
+    /* nVersion = 2 (same as unsigned dist TX; the TH commits to this). */
+    w_u32_le(tx_out + pos, 2u); pos += 4;
+
+    /* Segwit marker + flag. */
+    tx_out[pos++] = 0x00;
+    tx_out[pos++] = 0x01;
+
+    /* input_count = 1 */
+    tx_out[pos++] = 0x01;
+
+    /* prevout: 32-byte txid + 4-byte vout. */
+    memcpy(tx_out + pos, funding_txid, 32); pos += 32;
+    w_u32_le(tx_out + pos, funding_vout); pos += 4;
+
+    /* scriptSig length 0 (segwit). */
+    tx_out[pos++] = 0x00;
+
+    /* nSequence = 0xFFFFFFFE.  Must match the TH commitment. */
+    w_u32_le(tx_out + pos, 0xFFFFFFFEu); pos += 4;
+
+    /* output_count */
+    if (out_count_varint_len == 1u) {
+        tx_out[pos++] = (unsigned char)n_outputs;
+    } else {
+        tx_out[pos++] = 0xfd;
+        tx_out[pos++] = (unsigned char)(n_outputs & 0xff);
+        tx_out[pos++] = (unsigned char)((n_outputs >> 8) & 0xff);
+    }
+
+    /* outputs */
+    for (uint32_t i = 0; i < f->n_users; i++) {
+        pos += serialize_output(tx_out + pos, f->slot_deposit_sats,
+                                f->user_spks[i], 34);
+    }
+    pos += serialize_output(tx_out + pos, (uint64_t)CTV_FACTORY_ANCHOR_SATS,
+                            CTV_FACTORY_ANCHOR_SPK, CTV_FACTORY_ANCHOR_SPK_LEN);
+
+    /* Witness for the single input. */
+    memcpy(tx_out + pos, witness_buf, witness_len);
+    pos += witness_len;
+
+    /* nLockTime = 0 */
+    w_u32_le(tx_out + pos, 0u); pos += 4;
+
+    *tx_len_inout = pos;
+    return 1;
+}
+
+
+/* ====================================================================
  *  Hierarchical CTV factory (Phase C.1)
  * ==================================================================== */
 
@@ -467,4 +668,24 @@ int ctv_hier_factory_build(
 
     return build_factory_funding_spk(ctx, &f->root_keyagg, f->root_th,
                                       sweep_ptr, f->funding_spk);
+}
+
+int ctv_hier_factory_build_funding_witness(
+    const secp256k1_context  *ctx,
+    const ctv_hier_factory_t *f,
+    unsigned char            *witness_out,
+    size_t                   *witness_len_inout)
+{
+    if (!ctx || !f || !witness_out || !witness_len_inout) return 0;
+
+    tapscript_leaf_t sweep_storage;
+    const tapscript_leaf_t *sweep_ptr = NULL;
+    if (!build_optional_sweep_leaf(ctx, &f->lsp_pubkey,
+                                   f->recovery_offset_blocks,
+                                   f->recovery_cltv_absolute,
+                                   &sweep_storage, &sweep_ptr))
+        return 0;
+
+    return build_ctv_path_witness(ctx, &f->root_keyagg, f->root_th,
+                                   sweep_ptr, witness_out, witness_len_inout);
 }
