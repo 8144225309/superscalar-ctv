@@ -394,6 +394,16 @@ if(ENABLE_SANITIZERS)
     target_link_libraries(test_bip158_e2e_helper PRIVATE project_sanitizers)
 endif()
 
+# Phase D-lite operator tool: builds a CTV factory in-memory and prints
+# the artefacts (funding SPK, segwit dist TX, anchor outpoint) a Mutinynet
+# broadcast script consumes.
+add_executable(ctv_factory_build tools/ctv_factory_build.c)
+target_include_directories(ctv_factory_build PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
+target_link_libraries(ctv_factory_build PRIVATE superscalar project_warnings)
+if(ENABLE_SANITIZERS)
+    target_link_libraries(ctv_factory_build PRIVATE project_sanitizers)
+endif()
+
 add_executable(superscalar_bridge tools/superscalar_bridge.c)
 target_include_directories(superscalar_bridge PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
 target_include_directories(superscalar_bridge PRIVATE ${cjson_SOURCE_DIR})

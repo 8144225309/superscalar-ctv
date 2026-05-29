@@ -225,14 +225,17 @@ jobs:
           [regtest]
           rpcport=18443
           CONF
-      - name: Build superscalar_lsp
+      - name: Build superscalar_lsp + ctv_factory_build
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build build --parallel --target superscalar_lsp
+          cmake --build build --parallel --target superscalar_lsp ctv_factory_build
       - name: Live two-node CTV detection test
         run: |
           ulimit -s unlimited 2>/dev/null || true
           bash tools/test_ctv_node_detection.sh build "$PWD/inq/bin"
+      - name: CTV factory demo end-to-end (regtest, N=10)
+        run: |
+          bash tools/test_regtest_ctv_factory_demo.sh build "$PWD/inq/bin" 10
       - name: Stop bitcoind
         if: always()
         run: bitcoin-cli -regtest stop 2>/dev/null || true
