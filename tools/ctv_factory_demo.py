@@ -125,45 +125,63 @@ def build_cpfp_child(cli_args, dist_txid, anchor_vout, anchor_sats,
                      lsp_change_address, package_fee_sats):
     """Build a CPFP child: anchor input + wallet fee input → LSP change.
 
-    Uses bitcoin-cli's wallet for fee selection and signing.
+    We can't use fundrawtransaction here because the parent (dist TX) isn't
+    in the mempool yet — fundrawtransaction tries to look up the anchor UTXO
+    and fails with "Unable to find UTXO for external input."  And by design,
+    we can't broadcast the parent first (the P2A anchor isn't standard-
+    relayable except via submitpackage with this child).
+
+    So we build the child manually:
+      1. Pick a wallet UTXO via listunspent
+      2. Construct the TX hex with 2 inputs + 1 change output (explicit fee)
+      3. Sign with signrawtransactionwithwallet + prevtxs for the anchor
     """
-    # 1. Base TX: anchor input + placeholder output equal to the anchor sats,
-    #    going to the LSP change address.  Bitcoin Core's createrawtransaction
-    #    rejects empty outputs (error -8 "TX must have at least one output"),
-    #    so we seed one and let fundrawtransaction add a wallet fee input and
-    #    a real wallet change output alongside.
+    # 1. Pick a wallet UTXO large enough to cover the package fee + dust margin.
+    utxos = cli(cli_args, "listunspent", 1, 9999999)
+    target = max(package_fee_sats + 10000, 50000)
+    fee_utxo = next((u for u in utxos
+                     if int(round(float(u["amount"]) * 1e8)) >= target), None)
+    if not fee_utxo:
+        raise RuntimeError(
+            f"no wallet UTXO with >= {target} sats; got {len(utxos)} candidates")
+    fee_utxo_sats = int(round(float(fee_utxo["amount"]) * 1e8))
+
+    # 2. Build child TX manually:
+    #    inputs:  anchor (anyone-can-spend) + wallet UTXO (signed)
+    #    output:  change back to LSP = anchor + wallet_input − package_fee
+    change_sats = anchor_sats + fee_utxo_sats - package_fee_sats
+    if change_sats < 546:
+        raise RuntimeError(
+            f"CPFP child change too small ({change_sats} sat); "
+            f"either pick a larger fee_utxo or lower package_fee_sats")
     base_hex = cli(cli_args, "createrawtransaction",
-                   [{"txid": dist_txid, "vout": anchor_vout,
-                     "sequence": 0xFFFFFFFE}],
-                   [{lsp_change_address: f"{anchor_sats / 1e8:.8f}"}])
+                   [
+                       {"txid": dist_txid, "vout": anchor_vout,
+                        "sequence": 0xFFFFFFFE},
+                       {"txid": fee_utxo["txid"], "vout": fee_utxo["vout"],
+                        "sequence": 0xFFFFFFFE},
+                   ],
+                   [{lsp_change_address: f"{change_sats / 1e8:.8f}"}])
 
-    # 2. Have the wallet add a fee input + change output.  Tell it the
-    #    P2A anchor's weight so it doesn't undershoot the fee.
-    #    P2A anchor weight: 41 bytes prevout/script/seq * 4 + 1 wu witness = 165 wu.
-    fund_opts = {
-        "changeAddress": lsp_change_address,
-        "input_weights": [{
-            "txid": dist_txid, "vout": anchor_vout, "weight": 165
-        }],
-        # Force a flat fee — caller picked package_fee_sats already.
-        # `fee_rate` is sat/vB in Bitcoin Core 25+.
-        "fee_rate": max(2, package_fee_sats // 200),
-    }
-    funded = cli(cli_args, "fundrawtransaction", base_hex, fund_opts)
-    funded_hex = funded["hex"]
-
-    # 3. Sign wallet inputs.  Provide prevtxs for the P2A anchor so the
-    #    wallet doesn't refuse to sign on an unknown input.
-    prevtxs = [{
-        "txid": dist_txid,
-        "vout": anchor_vout,
-        "scriptPubKey": "51024e73",       # P2A: OP_1 OP_PUSHBYTES_2 0x4e73
-        "amount": anchor_sats / 1e8,
-    }]
-    signed = cli(cli_args, "signrawtransactionwithwallet", funded_hex, prevtxs)
-    # The anchor input has no signature (anyone-can-spend); some Bitcoin
-    # Core versions still report complete=true, others complete=false.
-    # Trust the hex either way and let submitpackage adjudicate.
+    # 3. Sign with the wallet, providing prevtxs so the anchor UTXO is known.
+    prevtxs = [
+        {
+            "txid": dist_txid,
+            "vout": anchor_vout,
+            "scriptPubKey": "51024e73",  # P2A: OP_1 OP_PUSHBYTES_2 0x4e73
+            "amount": anchor_sats / 1e8,
+        },
+        {
+            "txid": fee_utxo["txid"],
+            "vout": fee_utxo["vout"],
+            "scriptPubKey": fee_utxo["scriptPubKey"],
+            "amount": fee_utxo["amount"],
+        },
+    ]
+    signed = cli(cli_args, "signrawtransactionwithwallet", base_hex, prevtxs)
+    # The anchor input is anyone-can-spend — no signature needed.  Some
+    # Bitcoin Core versions still report complete=false; the wallet input
+    # is what matters.  submitpackage adjudicates the final shape.
     return signed["hex"]
 
 
