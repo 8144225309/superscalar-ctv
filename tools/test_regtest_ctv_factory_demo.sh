@@ -11,18 +11,27 @@
 # polling loops actually see confirmations.  This stays out of the demo
 # script's awareness (the demo doesn't know it's on regtest).
 #
-# Usage: test_regtest_ctv_factory_demo.sh BUILD_DIR INQ_BIN_DIR [N_USERS]
+# Usage: test_regtest_ctv_factory_demo.sh BUILD_DIR INQ_BIN_DIR [N_USERS] [DEPTH] [FANOUT]
 #   BUILD_DIR    dir containing built ctv_factory_build
 #   INQ_BIN_DIR  dir containing Inquisition bitcoind (e.g. inq/bin)
-#   N_USERS      number of factory user slots (default 10; must be <=200)
+#   N_USERS      number of factory user slots (default 10)
+#   DEPTH        hierarchical mode: tree depth (paired with FANOUT)
+#   FANOUT       hierarchical mode: tree fanout K (paired with DEPTH)
+#                When DEPTH+FANOUT given: hierarchical mode, asserts factory
+#                FUNDED (broadcast walker for sparse exits is a follow-up).
+#                When omitted: single-layer mode, asserts dist TX confirmed.
 #
 # Exit 0 = PASS, non-zero = FAIL.
 
 set -euo pipefail
 
-BUILD="${1:?usage: $0 BUILD_DIR INQ_BIN_DIR [N_USERS]}"
-INQ_BIN="${2:?usage: $0 BUILD_DIR INQ_BIN_DIR [N_USERS]}"
+BUILD="${1:?usage: $0 BUILD_DIR INQ_BIN_DIR [N_USERS] [DEPTH] [FANOUT]}"
+INQ_BIN="${2:?usage: $0 BUILD_DIR INQ_BIN_DIR [N_USERS] [DEPTH] [FANOUT]}"
 N_USERS="${3:-10}"
+DEPTH="${4:-}"
+FANOUT="${5:-}"
+HIERARCHICAL=0
+if [ -n "$DEPTH" ] && [ -n "$FANOUT" ]; then HIERARCHICAL=1; fi
 
 TOOL="$BUILD/ctv_factory_build"
 DEMO="$(dirname "$0")/ctv_factory_demo.py"
@@ -127,17 +136,25 @@ echo "  Background miner started (pid=$(cat "$MINER_PID_FILE"))"
 # Run the demo script, capturing all output.  We pass a BCLI command that
 # includes the wallet flag so sendtoaddress targets the funded wallet.
 echo ""
-echo "--- running ctv_factory_demo.py for $N_USERS users ---"
+if [ "$HIERARCHICAL" = "1" ]; then
+    echo "--- running ctv_factory_demo.py hierarchical: N=$N_USERS d=$DEPTH K=$FANOUT ---"
+else
+    echo "--- running ctv_factory_demo.py single-layer: N=$N_USERS ---"
+fi
 set +e
 DEMO_OUT="/tmp/ss_rt_${TAG}_demo.log"
-python3 "$DEMO" \
-    --users "$N_USERS" \
-    --slot-deposit-sats 10000 \
-    --build-tool "$TOOL" \
-    --bitcoin-cli "$INQ_BIN/bitcoin-cli -regtest -datadir=$DATADIR -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$RPCPORT -rpcwallet=$WALLET" \
-    --lsp-change-address "$LSP_CHANGE_ADDR" \
-    --dist-tx-fee-sats 15000 \
-    2>&1 | tee "$DEMO_OUT"
+DEMO_ARGS=(
+    --users "$N_USERS"
+    --slot-deposit-sats 10000
+    --build-tool "$TOOL"
+    --bitcoin-cli "$INQ_BIN/bitcoin-cli -regtest -datadir=$DATADIR -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$RPCPORT -rpcwallet=$WALLET"
+    --lsp-change-address "$LSP_CHANGE_ADDR"
+    --dist-tx-fee-sats 15000
+)
+if [ "$HIERARCHICAL" = "1" ]; then
+    DEMO_ARGS+=(--depth "$DEPTH" --fanout "$FANOUT")
+fi
+python3 "$DEMO" "${DEMO_ARGS[@]}" 2>&1 | tee "$DEMO_OUT"
 DEMO_RC=${PIPESTATUS[0]}
 set -e
 echo "  demo exit: $DEMO_RC"
@@ -153,7 +170,32 @@ if [ "$DEMO_RC" -ne 0 ]; then
     exit 1
 fi
 
-# Extract the dist_txid from the demo output and verify on-chain.
+if [ "$HIERARCHICAL" = "1" ]; then
+    # Hierarchical mode: assert the factory's funding TX confirmed and that
+    # the funding output went to the expected address.  Sparse-exit broadcast
+    # walker (per-layer dist TX serialization) is a follow-up PR.
+    FUND_TXID=$(grep -E "^\s+funding_txid\s+=" "$DEMO_OUT" | tail -1 | awk -F'=' '{print $2}' | tr -d ' ')
+    FUND_ADDR=$(grep -E "^\s+funding_address\s+=" "$DEMO_OUT" | tail -1 | awk -F'=' '{print $2}' | tr -d ' ')
+    if [ -z "$FUND_TXID" ] || [ -z "$FUND_ADDR" ]; then
+        echo "FAIL: could not extract funding_txid/funding_address from demo output"
+        tail -20 "$DEMO_OUT"
+        exit 1
+    fi
+    echo "  funding_txid: $FUND_TXID"
+    echo "  funding_addr: $FUND_ADDR"
+    $BCLI_W generatetoaddress 3 "$ADDR" >/dev/null
+    CONFIRMS=$($BCLI getrawtransaction "$FUND_TXID" true 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("confirmations",0))' || echo 0)
+    if [ "$CONFIRMS" -lt 1 ]; then
+        echo "FAIL: funding TX has $CONFIRMS confirmations"
+        exit 1
+    fi
+    echo "  funding TX confirmations: $CONFIRMS"
+    echo ""
+    echo "=== PASS: hierarchical CTV factory funded on regtest, N=$N_USERS users (d=$DEPTH K=$FANOUT) ==="
+    exit 0
+fi
+
+# Single-layer: assert dist TX confirmed and has expected output count.
 DIST_TXID=$(grep -E "^\s+dist_txid\s+=" "$DEMO_OUT" | tail -1 | awk -F'=' '{print $2}' | tr -d ' ')
 if [ -z "$DIST_TXID" ]; then
     echo "FAIL: could not extract dist_txid from demo output"
@@ -162,7 +204,6 @@ if [ -z "$DIST_TXID" ]; then
 fi
 echo "  dist_txid: $DIST_TXID"
 
-# Mine a couple more blocks for finality + assert the dist TX is confirmed.
 $BCLI_W generatetoaddress 3 "$ADDR" >/dev/null
 CONFIRMS=$($BCLI getrawtransaction "$DIST_TXID" true 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("confirmations",0))' || echo 0)
 if [ "$CONFIRMS" -lt 1 ]; then
@@ -171,7 +212,6 @@ if [ "$CONFIRMS" -lt 1 ]; then
 fi
 echo "  dist TX confirmations: $CONFIRMS"
 
-# Verify the right number of user outputs were created.
 N_VOUT=$($BCLI getrawtransaction "$DIST_TXID" true | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["vout"]))')
 EXPECTED_VOUT=$((N_USERS + 1))   # N users + 1 anchor
 if [ "$N_VOUT" -ne "$EXPECTED_VOUT" ]; then

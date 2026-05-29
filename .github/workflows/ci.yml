@@ -233,9 +233,12 @@ jobs:
         run: |
           ulimit -s unlimited 2>/dev/null || true
           bash tools/test_ctv_node_detection.sh build "$PWD/inq/bin"
-      - name: CTV factory demo end-to-end (regtest, N=10)
+      - name: CTV factory demo end-to-end (regtest, single-layer N=10)
         run: |
           bash tools/test_regtest_ctv_factory_demo.sh build "$PWD/inq/bin" 10
+      - name: CTV factory demo hierarchical (regtest, N=64 d=3 K=4)
+        run: |
+          bash tools/test_regtest_ctv_factory_demo.sh build "$PWD/inq/bin" 64 3 4
       - name: Stop bitcoind
         if: always()
         run: bitcoin-cli -regtest stop 2>/dev/null || true

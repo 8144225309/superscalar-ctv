@@ -219,12 +219,19 @@ def main():
                          "(must clear the node's min relay fee, typically >=512)")
     ap.add_argument("--no-broadcast", action="store_true",
                     help="build everything but skip sendtoaddress/sendrawtransaction")
+    ap.add_argument("--depth", type=int, default=None,
+                    help="hierarchical mode: tree depth (paired with --fanout)")
+    ap.add_argument("--fanout", type=int, default=None,
+                    help="hierarchical mode: tree fanout K (paired with --depth)")
     args = ap.parse_args()
+    hierarchical = (args.depth is not None and args.fanout is not None)
 
     cli_args = args.bitcoin_cli.split()
 
     # --- 1. Build factory in-memory --------------------------------------
-    print(f"[1/7] building factory: users={args.users} "
+    mode_label = (f"hierarchical d={args.depth} K={args.fanout}"
+                  if hierarchical else "single-layer")
+    print(f"[1/7] building factory ({mode_label}): users={args.users} "
           f"deposit={args.slot_deposit_sats}sat")
     build_args = [
         "--users", str(args.users),
@@ -233,13 +240,20 @@ def main():
         "--recovery-blocks", str(args.recovery_blocks),
         "--user-seed-base", str(args.seed_base),
     ]
+    if hierarchical:
+        build_args += ["--depth", str(args.depth), "--fanout", str(args.fanout)]
     f = run_build_tool(args.build_tool, build_args)
     funding_spk = f["funding_spk_hex"]
     total_funding = int(f["total_funding_sats"])
-    anchor_vout = int(f["anchor_vout"])
-    anchor_sats = int(f["anchor_sats"])
+    # anchor_vout/anchor_sats only meaningful in single-layer mode (per-layer
+    # anchors in hierarchical mode aren't surfaced from the build tool yet).
+    anchor_vout = int(f.get("anchor_vout", 0)) if not hierarchical else None
+    anchor_sats = int(f.get("anchor_sats", 240))
     print(f"      funding_spk_hex   = {funding_spk}")
     print(f"      total_funding     = {total_funding} sat")
+    if hierarchical:
+        print(f"      n_internal_nodes  = {f['n_internal_nodes']}")
+        print(f"      root_th_hex       = {f['root_th_hex']}")
 
     # --- 2. Derive bech32m address ----------------------------------------
     print(f"[2/7] decoding funding address ...")
@@ -271,6 +285,17 @@ def main():
     tx = wait_for_tx_in_block(cli_args, funding_txid)
     funding_vout = find_vout_for_spk(tx, funding_spk)
     print(f"      funding_vout      = {funding_vout}")
+
+    if hierarchical:
+        # Per-layer dist TX serialization (= sparse exit walker) is not yet
+        # in the C library.  For the hierarchical demo we stop here, having
+        # proven the factory is committed at the funding output.  The
+        # broadcast walker is a follow-up PR.
+        print(f"[5/7] hierarchical mode: factory FUNDED and committed.")
+        print(f"      sparse-exit broadcast walker not yet implemented.")
+        print(f"      {args.users} users committed to one UTXO via CTV.")
+        print(f"DONE - hierarchical factory committed at {funding_address}")
+        return
 
     # --- 5. Build segwit dist TX with witness -----------------------------
     print(f"[5/7] building segwit dist TX with CTV-path witness ...")
