@@ -273,3 +273,198 @@ int ctv_factory_build_dist_tx(
     *tx_len_inout = pos;
     return 1;
 }
+
+/* ====================================================================
+ *  Hierarchical CTV factory (Phase C.1)
+ * ==================================================================== */
+
+#include <stdlib.h>  /* for malloc/free in keyagg construction */
+
+/* Recursively build a subtree.
+ *
+ * For the leaf layer (depth_remaining == 0), constructs a dist TX whose
+ * K outputs are 2-of-2 LSP+user_i P2TRs (one per leaf user in this
+ * subtree), plus a P2A anchor.
+ *
+ * For an internal layer (depth_remaining > 0), recurses on K children,
+ * each handling n_users_in_subtree/K users.  This layer's dist TX has
+ * K outputs (each is the child subtree's SPK at the child's amount),
+ * plus a P2A anchor.
+ *
+ * At every layer, the subtree's MuSig2 keyagg is computed over
+ * (LSP, all users below this subtree).  The subtree's output SPK is
+ * P2TR(subtree_keyagg, CTV leaf <subtree TH>) — built via the Phase A
+ * helper with sweep_leaf=NULL.
+ *
+ * Outputs:
+ *   out_th[32]     — BIP-119 TH of this subtree's dist TX
+ *   *out_keyagg    — MuSig2 keyagg over LSP + this subtree's users
+ *   out_spk[34]    — this subtree's output scriptPubKey
+ *   *out_amount    — the amount this output should carry
+ */
+static int hier_build_subtree(
+    const secp256k1_context *ctx,
+    const secp256k1_pubkey  *lsp_pk,
+    const secp256k1_pubkey  *users_slice,
+    uint32_t                 n_users_in_subtree,
+    uint8_t                  fanout,
+    uint8_t                  depth_remaining,
+    uint64_t                 slot_deposit,
+    unsigned char            out_th[32],
+    musig_keyagg_t          *out_keyagg,
+    unsigned char            out_spk[34],
+    uint64_t                *out_amount)
+{
+    /* Subtree keyagg over LSP + all users in this subtree.
+     * Heap-allocate the temp pubkey array; could be up to ~65k+1 entries
+     * at the root of a maximum-depth tree. */
+    size_t n_pks = (size_t)n_users_in_subtree + 1u;
+    secp256k1_pubkey *pks = (secp256k1_pubkey *)malloc(
+        n_pks * sizeof(secp256k1_pubkey));
+    if (!pks) return 0;
+    pks[0] = *lsp_pk;
+    memcpy(pks + 1, users_slice,
+           (size_t)n_users_in_subtree * sizeof(secp256k1_pubkey));
+    int agg_ok = musig_aggregate_keys(ctx, out_keyagg, pks, n_pks);
+    free(pks);
+    if (!agg_ok) return 0;
+
+    /* Build the dist TX's outputs buffer (for outputs_hash).  Worst case:
+     * K = MAX_FANOUT outputs at 43 vbytes each, plus a 13-byte anchor. */
+    unsigned char outputs_buf[CTV_HIER_FACTORY_MAX_FANOUT * 43u + 13u];
+    size_t pos = 0;
+    uint64_t total_amount = 0;
+
+    if (depth_remaining == 0u) {
+        /* Leaf layer: K user outputs (2-of-2 LSP+user_i P2TRs). */
+        for (uint32_t i = 0; i < fanout; i++) {
+            unsigned char  leaf_spk[34];
+            musig_keyagg_t leaf_keyagg;
+            if (!build_user_leaf_spk_2of2(ctx, lsp_pk, &users_slice[i],
+                                           &leaf_keyagg, leaf_spk))
+                return 0;
+            pos += serialize_output(outputs_buf + pos, slot_deposit,
+                                    leaf_spk, 34);
+            total_amount += slot_deposit;
+        }
+    } else {
+        /* Internal layer: K child subtrees. */
+        uint32_t users_per_child = n_users_in_subtree / fanout;
+        for (uint32_t i = 0; i < fanout; i++) {
+            unsigned char  child_th[32];
+            musig_keyagg_t child_keyagg;
+            unsigned char  child_spk[34];
+            uint64_t       child_amount;
+            if (!hier_build_subtree(ctx, lsp_pk,
+                                     users_slice + (size_t)i * users_per_child,
+                                     users_per_child, fanout,
+                                     (uint8_t)(depth_remaining - 1u),
+                                     slot_deposit,
+                                     child_th, &child_keyagg, child_spk,
+                                     &child_amount))
+                return 0;
+            pos += serialize_output(outputs_buf + pos, child_amount,
+                                    child_spk, 34);
+            total_amount += child_amount;
+        }
+    }
+
+    /* Anchor output (last). */
+    pos += serialize_output(outputs_buf + pos,
+                            (uint64_t)CTV_FACTORY_ANCHOR_SATS,
+                            CTV_FACTORY_ANCHOR_SPK,
+                            CTV_FACTORY_ANCHOR_SPK_LEN);
+    total_amount += (uint64_t)CTV_FACTORY_ANCHOR_SATS;
+
+    /* outputs_hash = sha256(serialized_outputs). */
+    unsigned char outputs_hash[32];
+    sha256(outputs_buf, pos, outputs_hash);
+
+    /* sequences_hash = sha256(LE32(0xFFFFFFFE)). */
+    unsigned char seq_le[4];
+    w_u32_le(seq_le, 0xFFFFFFFEu);
+    unsigned char sequences_hash[32];
+    sha256(seq_le, 4, sequences_hash);
+
+    /* This subtree's dist-TX TH. */
+    if (!ctv_template_hash(
+            /* nVersion    */ 2,
+            /* nLockTime   */ 0,
+            /* input_count */ 1,
+            /* sequences_h */ sequences_hash,
+            /* output_count*/ (uint32_t)fanout + 1u,
+            /* outputs_h   */ outputs_hash,
+            /* input_index */ 0,
+            /* out_th      */ out_th))
+        return 0;
+
+    /* Subtree output SPK: P2TR(subtree_keyagg, CTV leaf <subtree_TH>).
+     * No sweep leaf at internal nodes in v0 (Item #14 defers depth-1 sweep). */
+    if (!build_factory_funding_spk(ctx, out_keyagg, out_th, NULL, out_spk))
+        return 0;
+
+    *out_amount = total_amount;
+    return 1;
+}
+
+int ctv_hier_factory_build(
+    const secp256k1_context *ctx,
+    ctv_hier_factory_t      *f,
+    uint32_t                 funding_block_height)
+{
+    if (!ctx || !f || !f->user_pubkeys) return 0;
+    if (f->depth == 0u  || f->depth  > CTV_HIER_FACTORY_MAX_DEPTH) return 0;
+    if (f->fanout < 2u  || f->fanout > CTV_HIER_FACTORY_MAX_FANOUT) return 0;
+    if (f->slot_deposit_sats == 0u) return 0;
+
+    /* Validate n_users == fanout^depth (uniform tree only). */
+    uint64_t expected_n = 1;
+    for (uint8_t i = 0; i < f->depth; i++) {
+        expected_n *= (uint64_t)f->fanout;
+        if (expected_n > (uint64_t)CTV_HIER_FACTORY_MAX_USERS) return 0;
+    }
+    if ((uint64_t)f->n_users != expected_n) return 0;
+
+    /* Internal node count = (K^d - 1) / (K - 1).  Each consumes one anchor. */
+    f->n_internal_nodes = (uint32_t)((expected_n - 1u) / (uint64_t)(f->fanout - 1u));
+
+    /* Total funding amount the LSP must deposit. */
+    f->total_funding_sats = (uint64_t)f->n_users * f->slot_deposit_sats
+                          + (uint64_t)f->n_internal_nodes
+                          * (uint64_t)CTV_FACTORY_ANCHOR_SATS;
+
+    /* LSP-recovery sweep absolute height (per Item #4). */
+    f->recovery_cltv_absolute = (f->recovery_offset_blocks == 0u)
+                                ? 0u
+                                : funding_block_height + f->recovery_offset_blocks;
+
+    /* Recursive bottom-up build.  Top-level depth_remaining = depth - 1
+     * so that depth=1 → leaf layer dist TX directly off the funding output. */
+    unsigned char unused_spk[34];
+    uint64_t      unused_amount;
+    if (!hier_build_subtree(ctx, &f->lsp_pubkey,
+                             f->user_pubkeys, f->n_users, f->fanout,
+                             (uint8_t)(f->depth - 1u),
+                             f->slot_deposit_sats,
+                             f->root_th, &f->root_keyagg,
+                             unused_spk, &unused_amount))
+        return 0;
+
+    /* Funding output SPK: P2TR(root_keyagg, CTV<root_TH> + optional sweep). */
+    tapscript_leaf_t        sweep_leaf;
+    const tapscript_leaf_t *sweep_ptr = NULL;
+    if (f->recovery_offset_blocks != 0u) {
+        secp256k1_xonly_pubkey lsp_xonly;
+        if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &lsp_xonly, NULL,
+                                                &f->lsp_pubkey))
+            return 0;
+        if (!tapscript_build_cltv_timeout(&sweep_leaf,
+                                          f->recovery_cltv_absolute,
+                                          &lsp_xonly, ctx))
+            return 0;
+        sweep_ptr = &sweep_leaf;
+    }
+
+    return build_factory_funding_spk(ctx, &f->root_keyagg, f->root_th,
+                                      sweep_ptr, f->funding_spk);
+}

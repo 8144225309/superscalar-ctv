@@ -1321,6 +1321,15 @@ extern int test_ctv_factory_leaf_spk_depends_on_lsp_pubkey(void);
 extern int test_ctv_factory_user_keyagg_deterministic(void);
 extern int test_ctv_factory_leaf_spk_matches_user_keyagg(void);
 
+/* superscalar-ctv: CTV factory builder (Phase C.1, hierarchical) */
+extern int test_ctv_hier_depth2_16users(void);
+extern int test_ctv_hier_depth5_1024users_scaling_unlock(void);
+extern int test_ctv_hier_deterministic(void);
+extern int test_ctv_hier_user_change_changes_root_th(void);
+extern int test_ctv_hier_sweep_changes_funding_spk_only(void);
+extern int test_ctv_hier_invalid_topology_rejected(void);
+extern int test_ctv_hier_null_rejected(void);
+
 /* Phase 16: Reconnection */
 extern int test_reconnect_wire(void);
 extern int test_reconnect_pubkey_match(void);
@@ -3214,6 +3223,15 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_factory_leaf_spk_depends_on_lsp_pubkey);
     RUN_TEST(test_ctv_factory_user_keyagg_deterministic);
     RUN_TEST(test_ctv_factory_leaf_spk_matches_user_keyagg);
+
+    printf("\n=== CTV factory builder (Phase C.1, hierarchical) ===\n");
+    RUN_TEST(test_ctv_hier_depth2_16users);
+    RUN_TEST(test_ctv_hier_depth5_1024users_scaling_unlock);
+    RUN_TEST(test_ctv_hier_deterministic);
+    RUN_TEST(test_ctv_hier_user_change_changes_root_th);
+    RUN_TEST(test_ctv_hier_sweep_changes_funding_spk_only);
+    RUN_TEST(test_ctv_hier_invalid_topology_rejected);
+    RUN_TEST(test_ctv_hier_null_rejected);
 
     printf("\n=== Reconnection (Phase 16) ===\n");
     RUN_TEST(test_reconnect_wire);
