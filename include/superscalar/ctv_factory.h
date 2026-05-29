@@ -347,6 +347,23 @@ int ctv_hier_factory_build_funding_witness(
     size_t                   *witness_len_inout);
 
 /*
+ * Compute the deferred leaf outpoint for user_index in a single-layer
+ * CTV factory.  Sibling of ctv_hier_factory_compute_leaf_outpoint:
+ *   leaf_txid = sha256d(legacy dist_tx serialization)
+ *   leaf_vout = user_index   (single-layer outputs are 1:1 with users)
+ *
+ * Used by Phase C.2 channel commit pre-signing.  Returns 1 on success;
+ * user_index >= factory->n_users returns 0.
+ */
+int ctv_factory_compute_leaf_outpoint(
+    const ctv_factory_t  *factory,
+    uint32_t              user_index,
+    const unsigned char   funding_txid[32],
+    uint32_t              funding_vout,
+    unsigned char         out_leaf_txid[32],
+    uint32_t             *out_leaf_vout);
+
+/*
  * Build the LEGACY (non-segwit) serialization of a Phase C.2 channel
  * commit TX.  The TX spends the user's leaf outpoint (typically deferred,
  * derived via ctv_hier_factory_compute_leaf_outpoint) and produces two

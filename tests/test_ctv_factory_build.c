@@ -1040,6 +1040,67 @@ int test_channel_commit_sign_and_verify(void) {
 }
 
 /* Too-small buffer must return 0 and set required size. */
+/* --- Single-layer leaf outpoint resolver (Phase C.2d) --- */
+
+int test_factory_compute_leaf_outpoint_basic(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ASSERT(ctx, "ctx");
+    ctv_factory_t f;
+    ASSERT(tf_populate(ctx, &f, /*n=*/4, /*deposit=*/10000ull, /*off=*/0),
+           "populate");
+    ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
+    unsigned char funding_txid[32]; memset(funding_txid, 0xAB, 32);
+
+    unsigned char txid_a[32], txid_b[32];
+    uint32_t vout_a = 99, vout_b = 99;
+    ASSERT(ctv_factory_compute_leaf_outpoint(
+               &f, 0, funding_txid, 0, txid_a, &vout_a), "user 0");
+    ASSERT(vout_a == 0u, "user 0 vout==0");
+    ASSERT(ctv_factory_compute_leaf_outpoint(
+               &f, 3, funding_txid, 0, txid_b, &vout_b), "user 3");
+    ASSERT(vout_b == 3u, "user 3 vout==3");
+    /* Same funding outpoint → same leaf TXID regardless of user_index. */
+    ASSERT(memcmp(txid_a, txid_b, 32) == 0,
+           "leaf TXID stable across user_index for same funding outpoint");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+int test_factory_compute_leaf_outpoint_depends_on_funding(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f;
+    ASSERT(tf_populate(ctx, &f, /*n=*/4, /*deposit=*/10000ull, /*off=*/0),
+           "populate");
+    ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
+    unsigned char f1[32], f2[32];
+    memset(f1, 0xAB, 32); memset(f2, 0xCD, 32);
+    unsigned char t1[32], t2[32]; uint32_t v1, v2;
+    ASSERT(ctv_factory_compute_leaf_outpoint(&f, 0, f1, 0, t1, &v1), "f1");
+    ASSERT(ctv_factory_compute_leaf_outpoint(&f, 0, f2, 0, t2, &v2), "f2");
+    ASSERT(memcmp(t1, t2, 32) != 0,
+           "leaf TXID changes with funding TXID");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+int test_factory_compute_leaf_outpoint_rejects_out_of_range(void) {
+    secp256k1_context *ctx = tf_ctx();
+    ctv_factory_t f;
+    ASSERT(tf_populate(ctx, &f, /*n=*/4, /*deposit=*/10000ull, /*off=*/0),
+           "populate");
+    ASSERT(ctv_factory_build(ctx, &f, 100u), "build");
+    unsigned char funding_txid[32]; memset(funding_txid, 0xAB, 32);
+    unsigned char txid[32]; uint32_t vout;
+    ASSERT(!ctv_factory_compute_leaf_outpoint(
+               &f, 4, funding_txid, 0, txid, &vout),
+           "user_index == n_users must fail");
+    ASSERT(!ctv_factory_compute_leaf_outpoint(
+               &f, 99, funding_txid, 0, txid, &vout),
+           "user_index > n_users must fail");
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
 int test_channel_commit_tx_too_small_buffer(void) {
     secp256k1_context *ctx = tf_ctx();
     secp256k1_xonly_pubkey user_x, lsp_x;
