@@ -223,6 +223,17 @@ def main():
                     help="hierarchical mode: tree depth (paired with --fanout)")
     ap.add_argument("--fanout", type=int, default=None,
                     help="hierarchical mode: tree fanout K (paired with --depth)")
+    ap.add_argument("--with-channels", type=int, default=0, metavar="M",
+                    help="Phase C.2: sign channel-commit (unilateral exit) "
+                         "TXes for the first M users after funding confirms. "
+                         "Single-layer mode only.")
+    ap.add_argument("--channel-to-user-sats", type=int, default=None,
+                    help="channel balance to user (sats); "
+                         "default = slot_deposit_sats - channel-to-lsp-sats - 250 (fee)")
+    ap.add_argument("--channel-to-lsp-sats", type=int, default=500,
+                    help="channel balance to LSP (sats); default 500")
+    ap.add_argument("--channels-out-dir", default="channel_commits",
+                    help="directory to write per-user signed channel commits into")
     args = ap.parse_args()
     hierarchical = (args.depth is not None and args.fanout is not None)
 
@@ -294,8 +305,57 @@ def main():
         print(f"[5/7] hierarchical mode: factory FUNDED and committed.")
         print(f"      sparse-exit broadcast walker not yet implemented.")
         print(f"      {args.users} users committed to one UTXO via CTV.")
+        if args.with_channels > 0:
+            print(f"      --with-channels not yet supported in hierarchical mode.")
         print(f"DONE - hierarchical factory committed at {funding_address}")
         return
+
+    # --- 4b. Optional: sign channel-commit (unilateral exit) TXes ---------
+    # The leaf outpoints are deterministic from the funding outpoint + factory
+    # parameters, so each user CAN have a fully signed force-close transaction
+    # in hand BEFORE the dist TX is broadcast.  That is the trustless guarantee.
+    if args.with_channels > 0:
+        import os
+        m = args.with_channels
+        if m > args.users:
+            sys.stderr.write(
+                f"--with-channels {m} > --users {args.users}\n")
+            sys.exit(1)
+        funding_txid_wire = txid_rpc_to_wire(funding_txid)
+        to_lsp = args.channel_to_lsp_sats
+        to_user = (args.channel_to_user_sats
+                   if args.channel_to_user_sats is not None
+                   else max(0, args.slot_deposit_sats - to_lsp - 250))
+        if to_user + to_lsp > args.slot_deposit_sats:
+            sys.stderr.write(
+                f"channel split ({to_user}+{to_lsp}) exceeds leaf amount "
+                f"({args.slot_deposit_sats})\n")
+            sys.exit(1)
+        os.makedirs(args.channels_out_dir, exist_ok=True)
+        print(f"[4b/7] signing {m} channel-commit TXes "
+              f"(to_user={to_user}, to_lsp={to_lsp}) ...")
+        for i in range(m):
+            r = run_build_tool(args.build_tool, build_args + [
+                "--funding-txid", funding_txid_wire,
+                "--funding-vout", str(funding_vout),
+                "--channel-sign",
+                "--channel-user", str(i),
+                "--to-user-sats", str(to_user),
+                "--to-lsp-sats", str(to_lsp),
+            ])
+            rec = {
+                "user_index": i,
+                "leaf_txid_hex": r["leaf_txid_hex"],
+                "leaf_vout": int(r["leaf_vout"]),
+                "channel_to_user_sats": to_user,
+                "channel_to_lsp_sats":  to_lsp,
+                "channel_commit_tx_hex":  r["channel_commit_tx_hex"],
+                "channel_commit_sig_hex": r["channel_commit_sig_hex"],
+            }
+            with open(f"{args.channels_out_dir}/user_{i:05d}.json", "w") as fh:
+                json.dump(rec, fh, indent=2)
+        print(f"      wrote {m} signed channel-commit records → "
+              f"{args.channels_out_dir}/")
 
     # --- 5. Build segwit dist TX with witness -----------------------------
     print(f"[5/7] building segwit dist TX with CTV-path witness ...")
