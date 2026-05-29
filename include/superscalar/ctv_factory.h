@@ -347,6 +347,49 @@ int ctv_hier_factory_build_funding_witness(
     size_t                   *witness_len_inout);
 
 /*
+ * Build the LEGACY (non-segwit) serialization of a Phase C.2 channel
+ * commit TX.  The TX spends the user's leaf outpoint (typically deferred,
+ * derived via ctv_hier_factory_compute_leaf_outpoint) and produces two
+ * outputs:
+ *   [0] to_user — P2TR(to_user_xonly), pays the user their channel balance
+ *   [1] to_lsp  — P2TR(to_lsp_xonly), pays the LSP their channel balance
+ *
+ * v0 channel commit shape (simplified for the demo): key-path-only P2TR
+ * outputs for both sides.  No HTLCs, no CSV delay on to_user, no
+ * revocation script path.  These compose on top in Phase C.2 v1+.
+ *
+ * Layout (137 bytes total):
+ *   nVersion(4) || input_count(1)=1
+ *     || prevout txid(32) || prevout vout(4)
+ *     || scriptSig_len(1)=0
+ *     || nSequence(4)=0xFFFFFFFE
+ *     || output_count(1)=2
+ *     || amount(8) || spk_len(1)=0x22 || P2TR_to_user(34)    [43 bytes]
+ *     || amount(8) || spk_len(1)=0x22 || P2TR_to_lsp(34)     [43 bytes]
+ *     || nLockTime(4)=0
+ *
+ * The TXID is sha256d of these bytes.  C2c will compute the BIP-341
+ * keypath sighash from this serialization (plus knowledge of the leaf's
+ * previous output) and sign with the 2-of-2 LSP+user keyagg.
+ *
+ * to_user_sats + to_lsp_sats must be less than the leaf's slot_deposit
+ * (the difference is the channel commit's fee).
+ *
+ * Returns 1 on success; sets *tx_len_inout to the required size on
+ * too-small-buffer.
+ */
+int ctv_factory_build_channel_commit_tx(
+    const unsigned char            leaf_txid[32],
+    uint32_t                       leaf_vout,
+    const secp256k1_xonly_pubkey  *to_user_xonly,
+    const secp256k1_xonly_pubkey  *to_lsp_xonly,
+    uint64_t                       to_user_sats,
+    uint64_t                       to_lsp_sats,
+    const secp256k1_context       *ctx,
+    unsigned char                 *tx_out,
+    size_t                        *tx_len_inout);
+
+/*
  * Compute the deferred leaf outpoint for user_index in a hierarchical
  * CTV factory.
  *
