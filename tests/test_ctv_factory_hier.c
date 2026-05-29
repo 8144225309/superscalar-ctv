@@ -256,6 +256,144 @@ int test_ctv_hier_invalid_topology_rejected(void) {
     return 1;
 }
 
+/* --- Phase C.2 leaf outpoint resolver (PR-C2a) --- */
+
+/* user_index out of bounds must return 0. */
+int test_ctv_hier_leaf_outpoint_out_of_bounds(void) {
+    secp256k1_context *ctx = hf_ctx();
+    ctv_hier_factory_t f;
+    ASSERT(populate_hier(ctx, &f, 2, 4, 16, 10000ull, 0, 0xC0), "populate");
+    ASSERT(ctv_hier_factory_build(ctx, &f, 0u), "build");
+
+    unsigned char dummy_funding_txid[32];
+    memset(dummy_funding_txid, 0x42, 32);
+    unsigned char out_txid[32];
+    uint32_t out_vout;
+    ASSERT(!ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, /*user_index=*/16, dummy_funding_txid, 0,
+               out_txid, &out_vout),
+           "user_index >= n_users must be rejected");
+    ASSERT(!ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, /*user_index=*/9999, dummy_funding_txid, 0,
+               out_txid, &out_vout),
+           "much-too-large user_index must be rejected");
+    free_hier(&f);
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* leaf_vout == user_index mod fanout (the user's position within their
+ * leaf-layer subtree). */
+int test_ctv_hier_leaf_outpoint_vout_is_mod_K(void) {
+    secp256k1_context *ctx = hf_ctx();
+    ctv_hier_factory_t f;
+    /* d=3 K=4 = 64 users → 16 leaf-layer subtrees */
+    ASSERT(populate_hier(ctx, &f, 3, 4, 64, 10000ull, 0, 0xC1), "populate");
+    ASSERT(ctv_hier_factory_build(ctx, &f, 0u), "build");
+
+    unsigned char dummy_funding_txid[32];
+    memset(dummy_funding_txid, 0x55, 32);
+
+    for (uint32_t i = 0; i < f.n_users; i++) {
+        unsigned char leaf_txid[32];
+        uint32_t leaf_vout;
+        ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+                   ctx, &f, i, dummy_funding_txid, 0,
+                   leaf_txid, &leaf_vout),
+               "resolver succeeds");
+        ASSERT(leaf_vout == (i % (uint32_t)f.fanout),
+               "leaf_vout must equal user_index % fanout");
+    }
+    free_hier(&f);
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Users in the same leaf-layer subtree share leaf_txid; users in
+ * different leaf-layer subtrees have different leaf_txids. */
+int test_ctv_hier_leaf_outpoint_subtree_grouping(void) {
+    secp256k1_context *ctx = hf_ctx();
+    ctv_hier_factory_t f;
+    /* d=2 K=4 = 16 users → 4 leaf-layer subtrees of 4 users each */
+    ASSERT(populate_hier(ctx, &f, 2, 4, 16, 10000ull, 0, 0xC2), "populate");
+    ASSERT(ctv_hier_factory_build(ctx, &f, 0u), "build");
+
+    unsigned char dummy_funding_txid[32];
+    memset(dummy_funding_txid, 0x77, 32);
+
+    unsigned char txid[16][32];
+    uint32_t      vout[16];
+    for (uint32_t i = 0; i < 16; i++) {
+        ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+                   ctx, &f, i, dummy_funding_txid, 0, txid[i], &vout[i]),
+               "resolve user");
+    }
+
+    /* Subtree 0 (users 0..3): all share txid */
+    ASSERT(memcmp(txid[0], txid[1], 32) == 0, "users 0,1 same subtree");
+    ASSERT(memcmp(txid[1], txid[2], 32) == 0, "users 1,2 same subtree");
+    ASSERT(memcmp(txid[2], txid[3], 32) == 0, "users 2,3 same subtree");
+
+    /* Subtree 1 (users 4..7): differ from subtree 0, share among themselves */
+    ASSERT(memcmp(txid[3], txid[4], 32) != 0, "subtree 0 vs 1 differ");
+    ASSERT(memcmp(txid[4], txid[5], 32) == 0, "users 4,5 same subtree");
+    ASSERT(memcmp(txid[5], txid[6], 32) == 0, "users 5,6 same subtree");
+    ASSERT(memcmp(txid[6], txid[7], 32) == 0, "users 6,7 same subtree");
+
+    /* All 4 subtrees produce distinct leaf_txids */
+    ASSERT(memcmp(txid[0], txid[4], 32) != 0, "subtree 0 vs 1");
+    ASSERT(memcmp(txid[0], txid[8], 32) != 0, "subtree 0 vs 2");
+    ASSERT(memcmp(txid[0], txid[12], 32) != 0, "subtree 0 vs 3");
+    ASSERT(memcmp(txid[4], txid[8], 32) != 0, "subtree 1 vs 2");
+    ASSERT(memcmp(txid[4], txid[12], 32) != 0, "subtree 1 vs 3");
+    ASSERT(memcmp(txid[8], txid[12], 32) != 0, "subtree 2 vs 3");
+
+    free_hier(&f);
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
+/* Resolver result depends on funding_txid and funding_vout (changing the
+ * factory's parent outpoint must change every leaf_txid). */
+int test_ctv_hier_leaf_outpoint_depends_on_funding(void) {
+    secp256k1_context *ctx = hf_ctx();
+    ctv_hier_factory_t f;
+    ASSERT(populate_hier(ctx, &f, 2, 4, 16, 10000ull, 0, 0xC3), "populate");
+    ASSERT(ctv_hier_factory_build(ctx, &f, 0u), "build");
+
+    unsigned char tx_a[32], tx_b[32];
+    memset(tx_a, 0xAA, 32);
+    memset(tx_b, 0xBB, 32);
+
+    unsigned char leaf_a[32], leaf_b[32];
+    uint32_t vout_a, vout_b;
+
+    ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, 0, tx_a, 0, leaf_a, &vout_a), "resolve A");
+    ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, 0, tx_b, 0, leaf_b, &vout_b), "resolve B");
+
+    ASSERT(memcmp(leaf_a, leaf_b, 32) != 0,
+           "different funding_txid must produce different leaf_txid");
+
+    /* Same outpoint same vout → identical */
+    unsigned char leaf_c[32]; uint32_t vout_c;
+    ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, 0, tx_a, 0, leaf_c, &vout_c), "resolve C");
+    ASSERT(memcmp(leaf_a, leaf_c, 32) == 0,
+           "same params → same outpoint");
+
+    /* Changing only funding_vout also changes leaf_txid */
+    ASSERT(ctv_hier_factory_compute_leaf_outpoint(
+               ctx, &f, 0, tx_a, 7, leaf_c, &vout_c), "resolve C2");
+    ASSERT(memcmp(leaf_a, leaf_c, 32) != 0,
+           "different funding_vout must produce different leaf_txid");
+
+    free_hier(&f);
+    secp256k1_context_destroy(ctx);
+    return 1;
+}
+
 int test_ctv_hier_null_rejected(void) {
     secp256k1_context *ctx = hf_ctx();
     ctv_hier_factory_t f;
