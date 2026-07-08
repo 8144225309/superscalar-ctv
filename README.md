@@ -1,7 +1,7 @@
 # SuperScalar — CTV/Covenant Fork
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Bitcoin](https://img.shields.io/badge/Bitcoin-Lightning-orange.svg)](https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories/1143)
+[![Bitcoin](https://img.shields.io/badge/Bitcoin-Lightning-orange.svg)](https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories-with-pseudo-spilman-leaves/1242)
 
 ---
 
@@ -56,7 +56,7 @@ From a fresh Ubuntu machine to a running demo in 5 commands:
 
 ```bash
 sudo apt install build-essential cmake libsqlite3-dev python3  # dependencies
-git clone https://github.com/8144225309/SuperScalar.git && cd SuperScalar
+git clone https://github.com/8144225309/superscalar-ctv.git && cd superscalar-ctv
 mkdir -p build && cd build && cmake .. && make -j$(nproc) && cd ..
 source tools/setup_regtest.sh                                   # starts bitcoind, funds wallet
 bash tools/run_demo.sh --basic                                  # factory + payments + close (~30s)
@@ -758,7 +758,7 @@ Revocation via random per-commitment secrets, penalty sweeps on breach, 2-leaf t
 
 ### Wire Protocol
 
-79 message types over TCP with length-prefixed JSON framing. TLV binary codec available for BOLT-compatible encoding (version negotiated via HELLO/HELLO_ACK):
+95 message types over TCP with length-prefixed JSON framing. TLV binary codec available for BOLT-compatible encoding (version negotiated via HELLO/HELLO_ACK):
 
 | Category | Messages |
 |----------|----------|
@@ -806,14 +806,14 @@ CLN (lightningd)
 | `channel` | channel.c | Poon-Dryja channels: commitment txs, revocation, penalty, HTLCs |
 | `adaptor` | adaptor.c | MuSig2 adaptor signatures, PTLC key turnover |
 | `ladder` | ladder.c | Ladder manager: overlapping factory lifecycle, migration |
-| `wire` | wire.c | TCP transport, JSON framing, 54 message types |
+| `wire` | wire.c | TCP transport, JSON framing, 95 message types |
 | `lsp` | lsp.c | LSP server: factory creation, cooperative close |
 | `client` | client.c | Client: factory ceremony, channel ops, rotation |
 | `lsp_channels` | lsp_channels.c | HTLC forwarding, event loop, factory rotation, per-leaf advance |
 | `lsp_bridge` | lsp_bridge.c | Bridge invoice registry, HTLC origin tracking, bridge message handling |
 | `lsp_rotation` | lsp_rotation.c | Factory rotation: PTLC turnover, cooperative close, ladder management |
 | `lsp_demo` | lsp_demo.c | Demo payment sequences, balance printing, external invoice creation |
-| `persist` | persist.c | SQLite3: 27 tables for full state persistence |
+| `persist` | persist.c | SQLite3: 60 tables (schema v36) for full state persistence |
 | `bridge` | bridge.c | CLN bridge daemon |
 | `fee` | fee.c | Configurable fee estimation |
 | `watchtower` | watchtower.c | Breach detection + penalty broadcast (LSP + client-side, factory nodes) |
@@ -845,7 +845,7 @@ CLN (lightningd)
 | `rgs` | rgs.c | Rapid Gossip Sync — compressed gossip snapshot ingest |
 | `htlc_accept` / `htlc_commit` / `htlc_forward` / `htlc_inbound` / `htlc_fee_bump` | htlc_*.c | Inbound HTLC accept path, commitment update, forwarding, fee bumping under congestion |
 | `chan_open` / `chan_close` | chan_*.c | Channel open + close orchestration |
-| `splice` | splice.c | Splicing wire codec stub (per #198 / #260; not yet a full implementation) |
+| `splice` | splice.c | Splicing wire codec stub — runtime state machine not implemented |
 | `payment` / `payment_uri` / `stateless_invoice` | payment*.c | End-user payment driver, lightning: URI parsing, BOLT 12 stateless invoices |
 | `hold_invoice` | hold_invoice.c | Hold-invoice support (BOLT 04 onion-hold pattern) |
 | `lnurl` | lnurl.c | LNURL-pay / withdraw / auth client |
@@ -896,7 +896,7 @@ SuperScalar is pre-1.0 software. Mainnet requires `--i-accept-the-risk`. No exte
 
 SuperScalar needs real-world testing on signet and testnet over weeks and months — multi-party factories, reconnections, breach detection, factory rotation, long-lived daemon sessions.
 
-**Testnet4 on-chain exhibition in progress**: All 13 SuperScalar structures (cooperative close, DW force-close, DW advance, DW exhibition, per-leaf advance, L-stock burn, breach + penalty, CLTV timeout, distribution TX, BOLT11 bridge, HTLC force-close, factory rotation, dual factory) have been validated on regtest and are being broadcast to testnet4 as a public proof-of-concept. Follow [github.com/8144225309/SuperScalar/issues](https://github.com/8144225309/SuperScalar/issues) for TXIDs and results as each structure confirms.
+**Testnet4 on-chain exhibition in progress**: All 13 SuperScalar structures (cooperative close, DW force-close, DW advance, DW exhibition, per-leaf advance, L-stock burn, breach + penalty, CLTV timeout, distribution TX, BOLT11 bridge, HTLC force-close, factory rotation, dual factory) have been validated on regtest and are being broadcast to testnet4 as a public proof-of-concept. Progress, TXIDs, and per-shape results are tracked in [`docs/testnet4-phase5/`](docs/testnet4-phase5/) in this repository.
 
 **How to help:**
 
