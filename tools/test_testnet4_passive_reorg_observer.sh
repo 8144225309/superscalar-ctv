@@ -59,6 +59,6 @@ echo
     --db "$WT_DB" \
     --poll-interval 30 \
     --rpcuser testnet4rpc \
-    --rpcpassword testnet4rpcpass123 \
+    --rpcpassword CHANGEME \
     --rpcport 48332 \
     2>&1 | tee -a "$WT_LOG"

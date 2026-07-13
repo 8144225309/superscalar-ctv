@@ -45,7 +45,7 @@ CLIENT_BIN="$BUILD_DIR/superscalar_client"
 
 NETWORK="testnet4"
 RPCUSER="${RPCUSER:-testnet4rpc}"
-RPCPASS="${RPCPASS:-testnet4rpcpass123}"
+RPCPASS="${RPCPASS:-CHANGEME}"
 RPCPORT="${RPCPORT:-48332}"
 WALLET="${WALLET:-superscalar_test}"
 
