@@ -63,7 +63,7 @@ def bitcoin_cli_args(network: str) -> list:
             cli,
             "-signet",
             "-rpcuser=" + os.environ.get("SIGNET_RPCUSER", "signetrpc"),
-            "-rpcpassword=" + os.environ.get("SIGNET_RPCPASS", "signetrpcpass123"),
+            "-rpcpassword=" + os.environ.get("SIGNET_RPCPASS", "CHANGEME"),
             "-rpcport=" + os.environ.get("SIGNET_RPCPORT", "38332"),
         ]
     if network == "regtest":

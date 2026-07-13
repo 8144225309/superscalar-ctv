@@ -265,7 +265,7 @@ python3 tools/dashboard.py \
   --btc-cli bitcoin-cli \
   --btc-network signet \
   --btc-rpcuser superscalar \
-  --btc-rpcpassword superscalar123
+  --btc-rpcpassword CHANGEME
 
 # Launch alongside the demo runner
 bash tools/run_demo.sh --all --dashboard

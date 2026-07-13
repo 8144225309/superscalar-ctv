@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
         char cmd[8192];
         const char *rpc_args = "";
         if (!strcmp(network, "signet")) {
-            rpc_args = "-signet -rpcuser=signetrpc -rpcpassword=signetrpcpass123 -rpcport=38332";
+            rpc_args = "-signet -rpcuser=signetrpc -rpcpassword=CHANGEME -rpcport=38332";
         } else if (!strcmp(network, "regtest")) {
             rpc_args = "-regtest -rpcuser=rpcuser -rpcpassword=rpcpass -rpcport=18443";
         } else {
