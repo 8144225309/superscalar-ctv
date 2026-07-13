@@ -45,7 +45,7 @@ cat > ~/.bitcoin-mutinynet/bitcoin.conf <<EOF
 signet=1
 [signet]
 signetchallenge=512102f7561d208dd9ae99bf497273e16f389bdbd6c4742ddb8e6b216e64fa2928ad8f51ae
-addnode=45.79.52.207:38333
+addnode=<SIGNET_NODE>:38333
 dnsseed=0
 server=1
 rpcuser=mutinynet
