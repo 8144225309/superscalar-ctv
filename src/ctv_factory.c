@@ -735,6 +735,204 @@ int ctv_hier_factory_build_funding_witness(
                                    sweep_ptr, witness_out, witness_len_inout);
 }
 
+/* Compute the deferred leaf outpoint for user_index in a single-layer
+ * factory.  Sibling of ctv_hier_factory_compute_leaf_outpoint. */
+int ctv_factory_compute_leaf_outpoint(
+    const ctv_factory_t  *f,
+    uint32_t              user_index,
+    const unsigned char   funding_txid[32],
+    uint32_t              funding_vout,
+    unsigned char         out_leaf_txid[32],
+    uint32_t             *out_leaf_vout)
+{
+    if (!f || !funding_txid || !out_leaf_txid || !out_leaf_vout) return 0;
+    if (user_index >= f->n_users) return 0;
+
+    /* Build the legacy (no-witness) dist TX serialization.
+     * Layout: 4(version) + 1(in_count) + 36(prevout) + 1(scriptSig_len)
+     *         + 4(nSequence) + 1(out_count) + N*43(user outs)
+     *         + 13(anchor) + 4(nLockTime).  Slack: +256. */
+    unsigned char tx[CTV_FACTORY_MAX_USERS_SINGLE_LAYER * 43u + 256u];
+    size_t tlen = sizeof(tx);
+    if (!ctv_factory_build_dist_tx(f, funding_txid, funding_vout, tx, &tlen))
+        return 0;
+
+    /* TXID = sha256d of legacy serialization. */
+    unsigned char first[32];
+    sha256(tx, tlen, first);
+    sha256(first, 32, out_leaf_txid);
+
+    *out_leaf_vout = user_index;
+    return 1;
+}
+
+/* ====================================================================
+ *  Phase C.2 — channel commit sighash + signing (PR-C2c)
+ * ==================================================================== */
+
+int ctv_factory_compute_channel_commit_sighash(
+    const unsigned char *commit_tx,
+    size_t               commit_tx_len,
+    const unsigned char  leaf_spk[34],
+    uint64_t             leaf_amount,
+    unsigned char        sighash_out[32])
+{
+    /* The v0 channel commit is always 137 bytes (see PR-C2b layout). */
+    if (!commit_tx || !leaf_spk || !sighash_out) return 0;
+    if (commit_tx_len != 137u) return 0;
+
+    /* Slice the commit TX bytes. */
+    /*   prevout txid: bytes 5..36   (32 bytes)
+     *   prevout vout: bytes 37..40  (4 bytes LE)
+     *   nSequence:    bytes 42..45  (4 bytes LE)
+     *   outputs:      bytes 47..132 (86 bytes — two CTxOut serializations)
+     *   nVersion:     bytes 0..3    (4 bytes LE)
+     *   nLockTime:    bytes 133..136 (4 bytes LE)
+     */
+
+    /* sha_prevouts = sha256(prevout txid(32) || prevout vout(4)) */
+    unsigned char sha_prevouts[32];
+    sha256(commit_tx + 5, 36, sha_prevouts);
+
+    /* sha_amounts = sha256(LE64(leaf_amount)) */
+    unsigned char amt_le[8];
+    w_u64_le(amt_le, leaf_amount);
+    unsigned char sha_amounts[32];
+    sha256(amt_le, 8, sha_amounts);
+
+    /* sha_scriptpubkeys = sha256(varint(34) || leaf_spk(34)) */
+    unsigned char spk_serial[35];
+    spk_serial[0] = 34u;
+    memcpy(spk_serial + 1, leaf_spk, 34);
+    unsigned char sha_scriptpubkeys[32];
+    sha256(spk_serial, 35, sha_scriptpubkeys);
+
+    /* sha_sequences = sha256(LE32(nSequence)) — copied from commit_tx */
+    unsigned char sha_sequences[32];
+    sha256(commit_tx + 42, 4, sha_sequences);
+
+    /* sha_outputs = sha256(outputs section = 86 bytes at offset 47) */
+    unsigned char sha_outputs[32];
+    sha256(commit_tx + 47, 86, sha_outputs);
+
+    /* BIP-341 SIGHASH_DEFAULT key-path message (no extension):
+     *   epoch(1)=0  hash_type(1)=0x00  nVersion(4)  nLockTime(4)
+     *     sha_prevouts(32)  sha_amounts(32)
+     *     sha_scriptpubkeys(32)  sha_sequences(32)  sha_outputs(32)
+     *   spend_type(1)=0x00 (key-path, no annex)
+     *   input_index(4)=0
+     */
+    unsigned char msg[1 + 1 + 4 + 4 + 32 * 5 + 1 + 4];
+    size_t pos = 0;
+    msg[pos++] = 0x00;                              /* epoch */
+    msg[pos++] = 0x00;                              /* hash_type SIGHASH_DEFAULT */
+    memcpy(msg + pos, commit_tx, 4); pos += 4;       /* nVersion */
+    memcpy(msg + pos, commit_tx + commit_tx_len - 4, 4); pos += 4;  /* nLockTime */
+    memcpy(msg + pos, sha_prevouts, 32);      pos += 32;
+    memcpy(msg + pos, sha_amounts, 32);       pos += 32;
+    memcpy(msg + pos, sha_scriptpubkeys, 32); pos += 32;
+    memcpy(msg + pos, sha_sequences, 32);     pos += 32;
+    memcpy(msg + pos, sha_outputs, 32);       pos += 32;
+    msg[pos++] = 0x00;                              /* spend_type (key-path) */
+    w_u32_le(msg + pos, 0u); pos += 4;               /* input_index = 0 */
+
+    sha256_tagged("TapSighash", msg, pos, sighash_out);
+    return 1;
+}
+
+int ctv_factory_sign_channel_commit(
+    const secp256k1_context *ctx,
+    const unsigned char     *commit_tx,
+    size_t                   commit_tx_len,
+    const unsigned char      leaf_spk[34],
+    uint64_t                 leaf_amount,
+    const unsigned char      lsp_sk[32],
+    const unsigned char      user_sk[32],
+    musig_keyagg_t          *user_keyagg,
+    const unsigned char     *leaf_merkle_root,
+    unsigned char            sig64_out[64])
+{
+    if (!ctx || !commit_tx || !leaf_spk || !lsp_sk || !user_sk
+        || !user_keyagg || !sig64_out) return 0;
+
+    /* 1. Compute the BIP-341 sighash for the commit TX. */
+    unsigned char sighash[32];
+    if (!ctv_factory_compute_channel_commit_sighash(
+            commit_tx, commit_tx_len, leaf_spk, leaf_amount, sighash))
+        return 0;
+
+    /* 2. Run all-local 2-of-2 MuSig2 ceremony.  Keypair order MUST
+     * match the order used at factory build time (LSP first, user
+     * second — see build_user_leaf_spk_2of2). */
+    secp256k1_keypair keypairs[2];
+    if (!secp256k1_keypair_create(ctx, &keypairs[0], lsp_sk))  return 0;
+    if (!secp256k1_keypair_create(ctx, &keypairs[1], user_sk)) return 0;
+
+    return musig_sign_taproot(ctx, sig64_out, sighash,
+                               keypairs, 2,
+                               user_keyagg,
+                               leaf_merkle_root);
+}
+
+
+/* ====================================================================
+ *  Phase C.2 — channel commit TX builder (PR-C2b)
+ * ==================================================================== */
+
+int ctv_factory_build_channel_commit_tx(
+    const unsigned char            leaf_txid[32],
+    uint32_t                       leaf_vout,
+    const secp256k1_xonly_pubkey  *to_user_xonly,
+    const secp256k1_xonly_pubkey  *to_lsp_xonly,
+    uint64_t                       to_user_sats,
+    uint64_t                       to_lsp_sats,
+    const secp256k1_context       *ctx,
+    unsigned char                 *tx_out,
+    size_t                        *tx_len_inout)
+{
+    if (!leaf_txid || !to_user_xonly || !to_lsp_xonly || !ctx
+        || !tx_out || !tx_len_inout) return 0;
+
+    /* Total: 4 + 1 + 36 + 1 + 4 + 1 + 43 + 43 + 4 = 137 bytes. */
+    const size_t need = 137u;
+    if (*tx_len_inout < need) {
+        *tx_len_inout = need;
+        return 0;
+    }
+
+    /* Serialize the two output P2TRs first; if either xonly is malformed
+     * we want to bail before partially writing the TX. */
+    unsigned char to_user_spk[34];
+    unsigned char to_lsp_spk[34];
+    to_user_spk[0] = 0x51;  /* OP_1 */
+    to_user_spk[1] = 0x20;  /* OP_PUSHBYTES_32 */
+    if (!secp256k1_xonly_pubkey_serialize(ctx, to_user_spk + 2, to_user_xonly))
+        return 0;
+    to_lsp_spk[0] = 0x51;
+    to_lsp_spk[1] = 0x20;
+    if (!secp256k1_xonly_pubkey_serialize(ctx, to_lsp_spk + 2, to_lsp_xonly))
+        return 0;
+
+    size_t pos = 0;
+    w_u32_le(tx_out + pos, 2u); pos += 4;             /* nVersion = 2 */
+    tx_out[pos++] = 0x01;                              /* input_count = 1 */
+    memcpy(tx_out + pos, leaf_txid, 32); pos += 32;    /* prevout txid */
+    w_u32_le(tx_out + pos, leaf_vout); pos += 4;       /* prevout vout */
+    tx_out[pos++] = 0x00;                              /* scriptSig_len = 0 */
+    w_u32_le(tx_out + pos, 0xFFFFFFFEu); pos += 4;     /* nSequence */
+    tx_out[pos++] = 0x02;                              /* output_count = 2 */
+
+    /* to_user output (43 bytes) */
+    pos += serialize_output(tx_out + pos, to_user_sats, to_user_spk, 34);
+    /* to_lsp output (43 bytes) */
+    pos += serialize_output(tx_out + pos, to_lsp_sats, to_lsp_spk, 34);
+
+    w_u32_le(tx_out + pos, 0u); pos += 4;              /* nLockTime = 0 */
+
+    *tx_len_inout = pos;
+    return 1;
+}
+
 /* ====================================================================
  *  Phase C.2 — leaf outpoint resolver (PR-C2a)
  * ==================================================================== */

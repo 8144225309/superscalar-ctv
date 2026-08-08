@@ -1323,6 +1323,17 @@ extern int test_ctv_factory_leaf_spk_matches_user_keyagg(void);
 extern int test_ctv_factory_leaf_timeout_zero_offset_is_backward_compatible(void);
 extern int test_ctv_factory_leaf_timeout_changes_leaf_spk(void);
 extern int test_ctv_factory_leaf_timeout_keyagg_unchanged(void);
+extern int test_channel_commit_tx_layout(void);
+extern int test_channel_commit_tx_depends_on_leaf_outpoint(void);
+extern int test_channel_commit_tx_depends_on_amounts(void);
+extern int test_channel_commit_tx_depends_on_pubkeys(void);
+extern int test_channel_commit_tx_too_small_buffer(void);
+extern int test_channel_commit_sighash_deterministic(void);
+extern int test_channel_commit_sighash_depends_on_leaf_context(void);
+extern int test_channel_commit_sign_and_verify(void);
+extern int test_factory_compute_leaf_outpoint_basic(void);
+extern int test_factory_compute_leaf_outpoint_depends_on_funding(void);
+extern int test_factory_compute_leaf_outpoint_rejects_out_of_range(void);
 
 /* superscalar-ctv: funding-output witness + broadcastable dist TX (Phase D-lite) */
 extern int test_funding_witness_no_sweep_layout(void);
@@ -3243,6 +3254,17 @@ static void run_unit_tests(void) {
     RUN_TEST(test_ctv_factory_leaf_timeout_zero_offset_is_backward_compatible);
     RUN_TEST(test_ctv_factory_leaf_timeout_changes_leaf_spk);
     RUN_TEST(test_ctv_factory_leaf_timeout_keyagg_unchanged);
+    RUN_TEST(test_channel_commit_tx_layout);
+    RUN_TEST(test_channel_commit_tx_depends_on_leaf_outpoint);
+    RUN_TEST(test_channel_commit_tx_depends_on_amounts);
+    RUN_TEST(test_channel_commit_tx_depends_on_pubkeys);
+    RUN_TEST(test_channel_commit_tx_too_small_buffer);
+    RUN_TEST(test_channel_commit_sighash_deterministic);
+    RUN_TEST(test_channel_commit_sighash_depends_on_leaf_context);
+    RUN_TEST(test_channel_commit_sign_and_verify);
+    RUN_TEST(test_factory_compute_leaf_outpoint_basic);
+    RUN_TEST(test_factory_compute_leaf_outpoint_depends_on_funding);
+    RUN_TEST(test_factory_compute_leaf_outpoint_rejects_out_of_range);
 
     printf("\n=== CTV factory funding witness + segwit dist TX (Phase D-lite) ===\n");
     RUN_TEST(test_funding_witness_no_sweep_layout);
